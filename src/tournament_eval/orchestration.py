@@ -30,6 +30,7 @@ Typical usage::
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 
 from tournament_eval.llm import LLMClient
 from tournament_eval.models import (
@@ -188,7 +189,7 @@ async def _generate_one(
 
 async def generate_all(
     tasks: list[GenerationTask],
-    clients: list[LLMClient],
+    clients: Sequence[LLMClient],
 ) -> tuple[list[GenerationResult], dict[tuple[uuid.UUID, str], BaseException]]:
     """Run every client against every task to produce GenerationResults.
 
@@ -319,7 +320,7 @@ async def _rank_one(
 async def rank_all(
     ranking_tasks: list[RankingTask],
     generation_results: list[GenerationResult],
-    clients: list[LLMClient],
+    clients: Sequence[LLMClient],
 ) -> tuple[list[RankingResult], dict[tuple[uuid.UUID, str], BaseException]]:
     """Run every client as a judge against every RankingTask.
 
