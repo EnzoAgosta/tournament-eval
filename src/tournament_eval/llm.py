@@ -88,7 +88,7 @@ class LLMClient(abc.ABC):
     @abc.abstractmethod
     async def generate(self, prompt: str) -> str:
         """Send a plain-text prompt and return the raw response."""
-        ...
+        ...  # pragma: no cover
 
     @abc.abstractmethod
     async def generate_structured(

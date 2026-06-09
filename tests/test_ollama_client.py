@@ -6,6 +6,13 @@ import pytest
 from tournament_eval.llm import OllamaLLMClient, OllamaModelConfig
 
 
+class TestOllamaClient:
+    def test_name_returns_config_model_name(self) -> None:
+        cfg = OllamaModelConfig(model_name="llama3")
+        client = OllamaLLMClient(cfg)
+        assert client.name == "llama3"
+
+
 class TestOllamaPayload:
     def test_basic_payload(self) -> None:
         cfg = OllamaModelConfig(model_name="llama3")

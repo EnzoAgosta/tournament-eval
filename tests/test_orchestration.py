@@ -253,3 +253,42 @@ class TestRankAll:
 
         assert len(results) == 0
         assert len(failures) == 1
+
+    async def test_returns_client_failure(
+        self,
+        make_client: Callable[..., MockLLMClient],
+    ) -> None:
+        gen1 = GenerationResult(
+            id=uuid.uuid4(),
+            task_id=uuid.uuid4(),
+            generation_prompt="p",
+            raw_response="r1",
+            output="hello",
+            author="a",
+        )
+
+        ranking_task = RankingTask(
+            id=uuid.uuid4(),
+            ranking_prompt="Rank.",
+            generations={"A": gen1.id},
+        )
+
+        prompt = _build_judge_prompt(
+            ranking_task,
+            _build_generation_lookup([gen1]),
+        )
+
+        client = make_client(
+            "failing-judge",
+            structured_responses={},
+            fail_on={prompt},
+        )
+
+        results, failures = await rank_all(
+            [ranking_task],
+            [gen1],
+            [client],
+        )
+
+        assert len(results) == 0
+        assert len(failures) == 1
