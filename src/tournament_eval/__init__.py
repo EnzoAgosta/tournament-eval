@@ -7,6 +7,8 @@ every model generates outputs, then every model judges all outputs.
 from tournament_eval.llm import (
     LLMClient,
     ModelConfig,
+    OllamaLLMClient,
+    OllamaModelConfig,
     OpenAIModelConfig,
     AnthropicModelConfig,
     StructuredResponse,
@@ -31,12 +33,13 @@ __all__ = [
     "RankingTask",
     "RankingResult",
     "LetterGenerator",
-    "TaskManager",
     # Transport
     "LLMClient",
     "ModelConfig",
+    "OllamaModelConfig",
     "OpenAIModelConfig",
     "AnthropicModelConfig",
+    "OllamaLLMClient",
     "StructuredResponse",
     # Orchestration
     "generate_all",

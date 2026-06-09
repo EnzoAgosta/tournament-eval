@@ -1,7 +1,11 @@
 """LLM client abstractions and provider implementations."""
 
-import dataclasses
 import abc
+import asyncio
+import json
+
+import dataclasses
+import httpx
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -55,6 +59,16 @@ class AnthropicModelConfig(ModelConfig):
     """Optional extended thinking budget for Claude 3.7+."""
 
 
+@dataclasses.dataclass(frozen=True)
+class OllamaModelConfig(ModelConfig):
+    """Ollama-specific configuration."""
+
+    base_url: str = "http://localhost:11434"
+    """Ollama server base URL.  Defaults to the local default port."""
+    timeout: float = 300.0
+    """Request timeout in seconds (default 5 minutes)."""
+
+
 class LLMClient(abc.ABC):
     """Abstract base class for LLM provider wrappers.
 
@@ -106,3 +120,76 @@ class AnthropicLLMClient(LLMClient):
 
     async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
         raise NotImplementedError
+
+
+class OllamaLLMClient(LLMClient):
+    """Concrete Ollama client implementation.
+
+    Talks to a local (or remote) Ollama server via its native ``/api/generate``
+    endpoint.  Supports both plain text and JSON-structured generation.
+    """
+
+    def __init__(self, config: OllamaModelConfig) -> None:
+        super().__init__(config)
+
+    @property
+    def _url(self) -> str:
+        return f"{self._config.base_url}/api/generate"
+
+    def _payload(self, prompt: str, *, format_json: bool = False) -> dict:
+        """Build the JSON body for an ``/api/generate`` request."""
+        payload: dict = {
+            "model": self._config.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {},
+        }
+        if self._config.temperature is not None:
+            payload["options"]["temperature"] = self._config.temperature
+        if self._config.max_tokens is not None:
+            payload["options"]["num_predict"] = self._config.max_tokens
+        if self._config.system_prompt is not None:
+            payload["system"] = self._config.system_prompt
+        if format_json:
+            payload["format"] = "json"
+        return payload
+
+    async def _request(self, prompt: str, *, format_json: bool = False) -> dict:
+        """Send a request to Ollama with retries and return the parsed JSON body."""
+        cfg: OllamaModelConfig = self._config  # type: ignore[assignment]
+        payload = self._payload(prompt, format_json=format_json)
+        timeout = httpx.Timeout(cfg.timeout)
+
+        last_err: Exception | None = None
+        for attempt in range(cfg.retry_count):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(self._url, json=payload)
+                    response.raise_for_status()
+                    return response.json()
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc  # type: ignore[assignment]
+                if attempt < cfg.retry_count - 1:
+                    await asyncio.sleep(2**attempt)
+
+        assert last_err is not None
+        raise last_err
+
+    async def generate(self, prompt: str) -> str:
+        """Send a plain-text prompt and return the raw response string."""
+        data = await self._request(prompt)
+        return str(data["response"])
+
+    async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
+        """Send a prompt and return a structured (JSON) response.
+
+        Uses Ollama's ``format: "json"`` mode.  The schema is embedded in the
+        prompt text by the orchestration layer; this method only enforces
+        valid JSON output.
+        """
+        data = await self._request(prompt, format_json=True)
+        raw_text = str(data["response"])
+        parsed = json.loads(raw_text)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+        return StructuredResponse(data=parsed, raw=raw_text)
