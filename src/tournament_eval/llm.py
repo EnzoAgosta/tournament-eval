@@ -144,6 +144,7 @@ class OllamaLLMClient(LLMClient):
     def __init__(self, config: OllamaModelConfig) -> None:
         super().__init__(config)
         self._ollama_config = config
+        self._transport: httpx.AsyncBaseTransport | None = None
 
     @property
     def _url(self) -> str:
@@ -180,7 +181,9 @@ class OllamaLLMClient(LLMClient):
         last_err: Exception | None = None
         for attempt in range(self._ollama_config.retry_count):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                async with httpx.AsyncClient(
+                    timeout=timeout, transport=self._transport
+                ) as client:
                     response = await client.post(self._url, json=payload)
                     response.raise_for_status()
                     body: dict[str, object] = response.json()
