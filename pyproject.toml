@@ -1,9 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "tournament-eval"
 version = "0.1.0"
-description = "Add your description here"
+description = "Circular tournament evaluation framework for LLMs"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tournament_eval"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]

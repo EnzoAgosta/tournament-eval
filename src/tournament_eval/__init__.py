@@ -4,7 +4,7 @@ A framework for evaluating language models via circular ranking:
 every model generates outputs, then every model judges all outputs.
 """
 
-from tournament_eval.llm import (
+from .llm import (
     LLMClient,
     ModelConfig,
     OllamaLLMClient,
@@ -13,14 +13,14 @@ from tournament_eval.llm import (
     AnthropicModelConfig,
     StructuredResponse,
 )
-from tournament_eval.models import (
+from .models import (
     GenerationResult,
     GenerationTask,
     LetterGenerator,
     RankingResult,
     RankingTask,
 )
-from tournament_eval.orchestration import (
+from .orchestration import (
     build_ranking_tasks,
     generate_all,
     rank_all,
