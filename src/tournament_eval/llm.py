@@ -2,9 +2,9 @@
 
 import abc
 import asyncio
+import dataclasses
 import json
 
-import dataclasses
 import httpx
 
 
@@ -15,7 +15,7 @@ class StructuredResponse:
     Preserves both the parsed dict and the exact raw string for audit.
     """
 
-    data: dict
+    data: dict[str, object]
     """The parsed JSON object."""
     raw: str
     """The exact raw string returned by the LLM before parsing."""
@@ -91,7 +91,11 @@ class LLMClient(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+    ) -> StructuredResponse:
         """Send a prompt and return a structured response."""
         ...
 
@@ -105,7 +109,11 @@ class OpenAILLMClient(LLMClient):
     async def generate(self, prompt: str) -> str:
         raise NotImplementedError
 
-    async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+    ) -> StructuredResponse:
         raise NotImplementedError
 
 
@@ -118,7 +126,11 @@ class AnthropicLLMClient(LLMClient):
     async def generate(self, prompt: str) -> str:
         raise NotImplementedError
 
-    async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+    ) -> StructuredResponse:
         raise NotImplementedError
 
 
@@ -131,45 +143,51 @@ class OllamaLLMClient(LLMClient):
 
     def __init__(self, config: OllamaModelConfig) -> None:
         super().__init__(config)
+        self._ollama_config = config
 
     @property
     def _url(self) -> str:
-        return f"{self._config.base_url}/api/generate"
+        return f"{self._ollama_config.base_url}/api/generate"
 
-    def _payload(self, prompt: str, *, format_json: bool = False) -> dict:
+    def _payload(self, prompt: str, *, format_json: bool = False) -> dict[str, object]:
         """Build the JSON body for an ``/api/generate`` request."""
-        payload: dict = {
-            "model": self._config.model_name,
+        payload: dict[str, object] = {
+            "model": self._ollama_config.model_name,
             "prompt": prompt,
             "stream": False,
             "options": {},
         }
-        if self._config.temperature is not None:
-            payload["options"]["temperature"] = self._config.temperature
-        if self._config.max_tokens is not None:
-            payload["options"]["num_predict"] = self._config.max_tokens
-        if self._config.system_prompt is not None:
-            payload["system"] = self._config.system_prompt
+        if self._ollama_config.temperature is not None:
+            payload["options"]["temperature"] = self._ollama_config.temperature  # type: ignore[index]
+        if self._ollama_config.max_tokens is not None:
+            payload["options"]["num_predict"] = self._ollama_config.max_tokens  # type: ignore[index]
+        if self._ollama_config.system_prompt is not None:
+            payload["system"] = self._ollama_config.system_prompt
         if format_json:
             payload["format"] = "json"
         return payload
 
-    async def _request(self, prompt: str, *, format_json: bool = False) -> dict:
+    async def _request(
+        self,
+        prompt: str,
+        *,
+        format_json: bool = False,
+    ) -> dict[str, object]:
         """Send a request to Ollama with retries and return the parsed JSON body."""
-        cfg: OllamaModelConfig = self._config  # type: ignore[assignment]
         payload = self._payload(prompt, format_json=format_json)
-        timeout = httpx.Timeout(cfg.timeout)
+        timeout = httpx.Timeout(self._ollama_config.timeout)
 
         last_err: Exception | None = None
-        for attempt in range(cfg.retry_count):
+        for attempt in range(self._ollama_config.retry_count):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(self._url, json=payload)
                     response.raise_for_status()
-                    return response.json()
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc  # type: ignore[assignment]
-                if attempt < cfg.retry_count - 1:
+                    body: dict[str, object] = response.json()
+                    return body
+            except Exception as exc:
+                last_err = exc
+                if attempt < self._ollama_config.retry_count - 1:
                     await asyncio.sleep(2**attempt)
 
         assert last_err is not None
@@ -180,7 +198,11 @@ class OllamaLLMClient(LLMClient):
         data = await self._request(prompt)
         return str(data["response"])
 
-    async def generate_structured(self, prompt: str, schema: dict) -> StructuredResponse:
+    async def generate_structured(
+        self,
+        prompt: str,
+        _schema: dict[str, object],
+    ) -> StructuredResponse:
         """Send a prompt and return a structured (JSON) response.
 
         Uses Ollama's ``format: "json"`` mode.  The schema is embedded in the

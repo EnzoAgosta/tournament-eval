@@ -48,7 +48,7 @@ class GenerationResult:
     """The cleaned, ready-to-use text (e.g. stripped of markdown fences)."""
     author: str
     """The model identifier that produced this output (e.g. ``"gpt-4o"``)."""
-    metadata: dict = dataclasses.field(default_factory=dict)
+    metadata: dict[str, object] = dataclasses.field(default_factory=dict)
     """Arbitrary extra data such as cost, latency, or token count."""
 
 
@@ -92,5 +92,5 @@ class RankingResult:
     """The reasoning provided by the model, if any."""
     raw_response: str
     """The complete structured JSON response returned by the LLM."""
-    metadata: dict = dataclasses.field(default_factory=dict)
+    metadata: dict[str, object] = dataclasses.field(default_factory=dict)
     """Arbitrary extra data such as cost, latency, or token count."""

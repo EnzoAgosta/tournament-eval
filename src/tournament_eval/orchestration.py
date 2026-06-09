@@ -4,7 +4,11 @@ Typical usage::
 
     from tournament_eval.models import GenerationTask
     from tournament_eval.llm import OpenAILLMClient, AnthropicLLMClient
-    from tournament_eval.orchestration import generate_all, build_ranking_tasks, rank_all
+    from tournament_eval.orchestration import (
+        build_ranking_tasks,
+        generate_all,
+        rank_all,
+    )
 
     tasks = [GenerationTask(...), GenerationTask(...)]
     clients = [OpenAILLMClient(...), AnthropicLLMClient(...)]
@@ -28,7 +32,13 @@ import asyncio
 import uuid
 
 from tournament_eval.llm import LLMClient
-from tournament_eval.models import GenerationResult, GenerationTask, LetterGenerator, RankingResult, RankingTask
+from tournament_eval.models import (
+    GenerationResult,
+    GenerationTask,
+    LetterGenerator,
+    RankingResult,
+    RankingTask,
+)
 
 
 def _build_generation_lookup(
@@ -60,14 +70,17 @@ def _build_judge_prompt(
             "",
             'The "ranking" field must list every candidate alias exactly once,',
             'from best to worst. The "reasoning" field is optional.',
-            "NO TIES ARE ALLOWED. If two outputs appear equal, break the tie as you see fit.",
+            (
+                "NO TIES ARE ALLOWED. If two outputs appear equal, "
+                "break the tie as you see fit."
+            ),
             'and explain why using the "reasoning" field.',
         ]
     )
     return "\n".join(lines)
 
 
-_DEFAULT_RANKING_SCHEMA: dict = {
+_DEFAULT_RANKING_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
         "ranking": {
@@ -77,7 +90,10 @@ _DEFAULT_RANKING_SCHEMA: dict = {
         },
         "reasoning": {
             "type": "string",
-            "description": "Optional step-by-step analysis and explanation behind overall ranking and tie breakers.",
+            "description": (
+                "Optional step-by-step analysis and explanation "
+                "behind overall ranking and tie breakers."
+            ),
         },
     },
     "required": ["ranking"],
@@ -86,7 +102,7 @@ _DEFAULT_RANKING_SCHEMA: dict = {
 
 
 def _parse_ranking_response(
-    data: dict,
+    data: dict[str, object],
     valid_aliases: set[str],
 ) -> tuple[list[str], str | None]:
     """Validate and extract ranking + reasoning from a structured response.
@@ -120,7 +136,9 @@ def _parse_ranking_response(
     seen: set[str] = set()
     for alias in ranking_raw:
         if not isinstance(alias, str):
-            raise ValueError(f"Ranking entry must be a string, got {type(alias).__name__}")
+            raise ValueError(
+                f"Ranking entry must be a string, got {type(alias).__name__}"
+            )
         if alias not in valid_aliases:
             raise ValueError(f"Unknown alias in ranking: {alias!r}")
         if alias in seen:
@@ -134,7 +152,9 @@ def _parse_ranking_response(
 
     reasoning = data.get("reasoning")
     if reasoning is not None and not isinstance(reasoning, str):
-        raise ValueError(f'"reasoning" must be a string, got {type(reasoning).__name__}')
+        raise ValueError(
+            f'"reasoning" must be a string, got {type(reasoning).__name__}'
+        )
 
     return ranking, reasoning
 
@@ -330,7 +350,11 @@ async def rank_all(
     """
     generation_lookup = _build_generation_lookup(generation_results)
 
-    coros = [_rank_one(ranking_task, client, generation_lookup) for ranking_task in ranking_tasks for client in clients]
+    coros = [
+        _rank_one(ranking_task, client, generation_lookup)
+        for ranking_task in ranking_tasks
+        for client in clients
+    ]
     outcomes = await asyncio.gather(*coros)
 
     ranking_results: list[RankingResult] = []
