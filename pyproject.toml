@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28.1",
-    "pytest-cov>=7.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -21,6 +20,7 @@ dev = [
     "mypy>=2.1.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
 ]
 

@@ -1,45 +1,48 @@
-# Circular Tournament Evaluation Framework — Briefing
+# tournament-eval
 
-## Intent
+Circular tournament evaluation for language models.
 
-Build an **open-source ranking aggregation system** for evaluating multiple language models on subjective quality tasks (translation, code review, content evaluation, etc.). The system allows practitioners to:
-1. Run comparative evaluation on their own models
-2. Measure and capture judge bias as meaningful data
-3. Get multiple perspectives on quality without relying on a single judge
-4. Validate fine-tuned models before production deployment
+## What it is
 
-## What Separates It
+A framework where every model being evaluated also acts as a judge. Each model generates outputs for a shared set of tasks, then every model independently ranks every other model's outputs—including its own. The result is a complete graph of rankings with full reasoning capture.
 
-**Circular evaluation design:** Every model being evaluated *also* acts as a judge. This creates a complete graph where all candidates assess all outputs, including their own.
+## Why this matters
 
-**Order-invariant ranking aggregation:** Uses mathematically sound methods (Borda Count primary, Condorcet + Bradley-Terry as alternatives) that produce identical results regardless of input order or judge sequence. This is deliberate—no artificial "state" or learning across judgments.
+**Bias is not a bug, it's a signal.**
 
-**Explicit bias measurement:** Self-bias becomes a first-class output. When Model A judges itself differently than others judge it, that's captured and reported. Not hidden, not corrected—measured.
+When a model overrates its own output compared to how peers rate it, that tells you something about its calibration and confidence. When it systematically underrates a competitor, that reveals a preference pattern. These biases are measured, not corrected away. They become part of your evaluation dataset.
 
-**Full reasoning capture:** Doesn't just extract "winner," captures all judges' deliberations and rankings. This enables post-hoc analysis of judge preferences (e.g., "Sonnet prioritizes fluency, GPT prioritizes accuracy").
+**Deterministic by design.**
 
-## What It's NOT
+There is no Elo, no sequential history, no "learning" across judgments. Every evaluation is independent. Feed the same data in any order and you get the same result. The math is order-invariant: Borda Count, Condorcet, Bradley-Terry—pick your aggregation, the underlying rankings never change.
 
-**Not pairwise comparison.** It takes full ordinal rankings (1st, 2nd, 3rd, etc.) and aggregates them, not binary "A vs B" matchups.
+**Model-agnostic.**
 
-**Not sequential/stateful.** Unlike Elo, it doesn't assume model strength changes over time or that match history matters. Each evaluation is independent.
+The framework only cares about rankings. The models can be GPT-4, Claude, a local Llama, or a fine-tuned checkpoint you trained yesterday. They don't need to agree. They don't even need to know what the others are. Each produces an ordinal ranking; the aggregation method handles the rest.
 
-**Not single-judge evaluation.** Avoids the bias and brittleness of LLM-as-judge approaches that rely on one model's perspective.
+**No single point of failure.**
 
-**Not debate-based consensus.** Models don't iterate or persuade each other; they independently rank, then aggregation happens. Cleaner, deterministic.
+Five models judging five outputs each means 25 independent rankings per task. If one model hallucinates, its noise is diluted by the other four. If one model is biased, its bias is visible and measurable against the consensus. You are not relying on any single model's judgment.
 
-**Not benchmark/leaderboard infrastructure.** It's evaluation methodology for your specific models on your specific task, not a public ranking system.
+**Full reasoning capture.**
 
-## Key Benefits
+Every judge's deliberation text is preserved. This means you can run the evaluation once, then analyze:
+- Which model values fluency over accuracy?
+- Which model is most self-consistent?
+- Which model's reasoning correlates with human preference?
 
-**Multi-perspective signal:** Five judges × 500 test cases = 2,500 independent ranking observations. Signal is robust to individual judge idiosyncrasies.
+The rankings are the output. The reasoning is the audit trail.
 
-**Bias as data:** Self-bias reveals model confidence. A model that overrates itself vs. underrates competitors gives you insight into its "personality." This is useful for understanding model behavior, not a flaw to eliminate.
+## What it's not
 
-**Post-hoc analysis flexibility:** Run the evaluation *once*, then compute Borda, Condorcet, Bradley-Terry, or future ranking methods on the same data without re-running. Experiment with aggregation approaches free.
+- Not pairwise comparison. Full ordinal rankings, not binary "A vs B" votes.
+- Not stateful. No match history, no drifting scores. Each run is self-contained.
+- Not a consensus builder. Models don't debate or iterate. They independently judge; aggregation happens post-hoc.
+- Not a benchmark platform. It's evaluation methodology for your specific models on your specific task.
 
-**Cost-effective for production validation:** ~$130 for full multi-model evaluation beats hiring annotators ($5k+) or running human evaluation loops.
+## Tested, minimal, extensible
 
-**Suited for subjective quality tasks:** Translation, localization, code review, content quality—domains where there's no ground truth, only "better/worse." Perfect fit.
-
-**Transparency:** All judges' reasoning is visible. Can correlate final rankings with human validator feedback to see which judges aligned best with human preference.
+- 58 tests, 100% source coverage
+- Pure async functions, no hidden state
+- One concrete client (Ollama), abstract base ready for OpenAI, Anthropic, etc.
+- Aggregation math is intentionally out of scope: you own the rankings, compute what you want
