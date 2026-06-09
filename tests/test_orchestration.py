@@ -89,14 +89,6 @@ def make_client() -> Callable[..., MockLLMClient]:
     return _factory
 
 
-@pytest.fixture
-def make_task() -> Callable[[str], GenerationTask]:
-    def _factory(prompt: str) -> GenerationTask:
-        return GenerationTask(id=uuid.uuid4(), generation_prompt=prompt)
-
-    return _factory
-
-
 class TestGenerateAll:
     async def test_generates_for_all_tasks_and_clients(
         self,
