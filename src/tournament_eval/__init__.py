@@ -5,11 +5,11 @@ every model generates outputs, then every model judges all outputs.
 """
 
 from .llm import (
-    AnthropicModelConfig,
     LLMClient,
     ModelConfig,
     OllamaLLMClient,
     OllamaModelConfig,
+    OpenAILLMClient,
     OpenAIModelConfig,
     StructuredResponse,
 )
@@ -27,7 +27,6 @@ from .orchestration import (
 )
 
 __all__ = [
-    "AnthropicModelConfig",
     "GenerationResult",
     "GenerationTask",
     "LLMClient",
@@ -35,6 +34,7 @@ __all__ = [
     "ModelConfig",
     "OllamaLLMClient",
     "OllamaModelConfig",
+    "OpenAILLMClient",
     "OpenAIModelConfig",
     "RankingResult",
     "RankingTask",
