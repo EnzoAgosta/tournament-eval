@@ -29,6 +29,7 @@ Typical usage::
 """
 
 import asyncio
+import random
 import uuid
 from collections.abc import Sequence
 
@@ -231,6 +232,8 @@ def build_ranking_tasks(
     tasks: list[GenerationTask],
     generation_results: list[GenerationResult],
     ranking_prompt: str,
+    *,
+    random_seed: int | None = None,
 ) -> list[RankingTask]:
     """Group GenerationResults by task and create RankingTasks with aliases.
 
@@ -261,6 +264,9 @@ def build_ranking_tasks(
 
         alias_map: dict[str, uuid.UUID] = {}
         letter_gen = LetterGenerator()
+        # to fight models whi just like to choose A all the time
+        rng = random.Random(random_seed)
+        rng.shuffle(results)
         for result in results:
             alias_map[letter_gen.get_next_letter()] = result.id
 
