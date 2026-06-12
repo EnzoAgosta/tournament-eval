@@ -83,6 +83,7 @@ uv sync
 
 ```python
 import asyncio
+import contextlib
 import uuid
 
 from tournament_eval import (
@@ -96,41 +97,48 @@ from tournament_eval import (
 
 
 async def main() -> None:
-    # The contestants — also the judges.
-    clients = [
-        OllamaLLMClient(OllamaModelConfig(model_name="llama3.2")),
-        OllamaLLMClient(OllamaModelConfig(model_name="gemma3")),
-    ]
+    # Each client holds a connection pool and MUST be used as an async context
+    # manager. AsyncExitStack lets us enter a whole list of them cleanly.
+    async with contextlib.AsyncExitStack() as stack:
+        # The contestants — also the judges.
+        clients = [
+            await stack.enter_async_context(
+                OllamaLLMClient(OllamaModelConfig(model_name="llama3.2"))
+            ),
+            await stack.enter_async_context(
+                OllamaLLMClient(OllamaModelConfig(model_name="gemma3"))
+            ),
+        ]
 
-    # The tasks. Subjective by design — no gold answer.
-    tasks = [
-        GenerationTask(
-            id=uuid.uuid4(),
-            generation_prompt="Translate to French: The quick brown fox jumps over the lazy dog.",
-        ),
-    ]
+        # The tasks. Subjective by design — no gold answer.
+        tasks = [
+            GenerationTask(
+                id=uuid.uuid4(),
+                generation_prompt="Translate to French: The quick brown fox jumps over the lazy dog.",
+            ),
+        ]
 
-    # 1. Every model generates an output for every task.
-    generations, gen_failures = await generate_all(tasks, clients)
+        # 1. Every model generates an output for every task.
+        generations, gen_failures = await generate_all(tasks, clients)
 
-    # 2. Group outputs per task and assign anonymized aliases (A, B, ...).
-    ranking_tasks = build_ranking_tasks(
-        tasks=tasks,
-        generation_results=generations,
-        ranking_prompt="Rank these French translations by fluency and accuracy, best first.",
-    )
+        # 2. Group outputs per task and assign anonymized aliases (A, B, ...).
+        ranking_tasks = build_ranking_tasks(
+            tasks=tasks,
+            generation_results=generations,
+            ranking_prompt="Rank these French translations by fluency and accuracy, best first.",
+        )
 
-    # 3. Every model ranks every output, including its own.
-    rankings, rank_failures = await rank_all(
-        ranking_tasks=ranking_tasks,
-        generation_results=generations,
-        clients=clients,
-    )
+        # 3. Every model ranks every output, including its own.
+        rankings, rank_failures = await rank_all(
+            ranking_tasks=ranking_tasks,
+            generation_results=generations,
+            clients=clients,
+        )
 
-    for r in rankings:
-        print(f"{r.author} ranked: {r.raw_model_ranking}")
-        if r.reasoning:
-            print(f"  reasoning: {r.reasoning[:120]}...")
+        for r in rankings:
+            print(f"{r.author} ranked: {r.raw_model_ranking}")
+            if r.reasoning:
+                print(f"  reasoning: {r.reasoning[:120]}...")
 
 
 asyncio.run(main())
@@ -150,13 +158,48 @@ Every stage fans its work out concurrently with `asyncio.gather`. Failures aren'
 
 Judge responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best-guess.
 
+## Concurrency
+
+Every stage fans out with `asyncio.gather`, so by default **every request fires at once**. The concurrency limit lives on the *client*, not the orchestration — because rate limits belong to the provider, not to the tournament.
+
+```python
+# Per-client limit: at most 4 in-flight requests to this model.
+client = OpenAICompatibleLLMClient(
+    OpenAICompatibleModelConfig(model_name="gpt-4o", max_concurrency=4)
+)
+
+# Shared global cap: hand the same semaphore to several clients and they
+# draw from one budget of 8 concurrent requests between them.
+sem = asyncio.Semaphore(8)
+clients = [
+    OpenAICompatibleLLMClient(
+        OpenAICompatibleModelConfig(model_name="gpt-4o"), semaphore=sem
+    ),
+    OpenAICompatibleLLMClient(
+        OpenAICompatibleModelConfig(model_name="gpt-4o-mini"), semaphore=sem
+    ),
+]
+```
+
+`max_concurrency` defaults to `None` — **unbounded**. That's the right default for a local server you control (an Ollama box on a workstation can happily serve many small-model requests at once), but against a rate-limited hosted API you almost certainly want a conservative value, set either per-client or as a shared semaphore.
+
+The same limit applies whether you call the whole-pipeline `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one` directly — bounding is the client's job, so a hand-rolled loop is throttled identically.
+
+**Clients are async context managers.** Each holds one reused connection pool, opened on entry and closed on exit. Using a client outside an `async with` raises `RuntimeError`:
+
+```python
+async with OllamaLLMClient(OllamaModelConfig(model_name="llama3.2")) as client:
+    text = await client.generate("hello")
+# for a list of clients, see the quickstart's AsyncExitStack
+```
+
 ## Status
 
 This is an early, honest-about-it project.
 
 Clients are layered so a new provider is four small methods, not a rewrite:
 
-- **`LLMClient`** — the provider-agnostic base: just the `generate` / `generate_structured` contract. No wire-protocol knowledge.
+- **`LLMClient`** — the provider-agnostic base: connection-pool lifecycle, the concurrency limit, and the `generate` / `generate_structured` contract. No wire-protocol knowledge.
 - **`HTTPLLMClient`** — the shared template for any HTTP+JSON chat API: build a payload, POST with retries, extract the text, parse JSON. A provider implements four hooks: `_endpoint_url`, `_headers`, `_build_payload`, `_extract_text`.
 - **`OpenAICompatibleLLMClient`** — the workhorse, for anything speaking the OpenAI `/chat/completions` protocol (the official API, `mlx_lm.server`, vLLM, llama.cpp). Point `base_url` at the server's `/v1` root; structured output uses a strict `json_schema`.
 - **`OllamaLLMClient`** — a *sibling*, not a subclass: Ollama speaks its own protocol on `/api/chat`. The payoff is structured output via Ollama's native `format` field, which takes a full JSON schema and **constrains decoding** to it — stronger than the OpenAI-compatible endpoint, which ignores `json_schema`.

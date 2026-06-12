@@ -2,8 +2,9 @@
 
 Layering
 --------
-* :class:`LLMClient` — provider-agnostic base: the abstract ``generate`` /
-  ``generate_structured`` contract.  Knows nothing about any wire protocol.
+* :class:`LLMClient` — provider-agnostic base: connection-pool lifecycle,
+  concurrency limiting, and the abstract ``generate`` / ``generate_structured``
+  contract.  Knows nothing about any wire protocol.
 * :class:`HTTPLLMClient` — the shared template for any HTTP+JSON chat API:
   build a payload, POST it with retries, pull the text back out, and (for
   structured calls) parse JSON.  Subclasses fill in four small hooks.
@@ -16,9 +17,11 @@ Adding a provider is implementing four hooks on :class:`HTTPLLMClient`:
 
 import abc
 import asyncio
+import contextlib
 import dataclasses
 import json
 import os
+from typing import Self
 
 import httpx
 
@@ -50,6 +53,16 @@ class ModelConfig:
     """Optional system-level prompt prepended to each request."""
     retry_count: int = 3
     """Total attempts for a failed request."""
+    max_concurrency: int | None = None
+    """Maximum number of in-flight requests for this client.
+
+    ``None`` (the default) means **unbounded** — every request fires as soon as
+    it is scheduled.  This is fine for a local server you control (e.g. Ollama on
+    a workstation that can happily serve many small-model requests at once), but
+    against a rate-limited hosted API you almost certainly want a conservative
+    value.  See :class:`LLMClient` for how to also share one limit across several
+    clients.
+    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,23 +118,99 @@ class OllamaModelConfig(HTTPModelConfig):
 class LLMClient(abc.ABC):
     """Abstract base class for LLM provider wrappers.
 
-    Provider-agnostic on purpose: it declares the ``generate`` /
-    ``generate_structured`` contract but knows nothing about any wire protocol.
-    HTTP+JSON providers should subclass :class:`HTTPLLMClient` rather than this
-    directly.
+    Provider-agnostic on purpose: it owns the connection-pool lifecycle and the
+    concurrency limit, and declares the ``generate`` / ``generate_structured``
+    contract — but knows nothing about any wire protocol.  HTTP+JSON providers
+    should subclass :class:`HTTPLLMClient` rather than this directly.
+
+    Lifecycle
+    ---------
+    A client holds a long-lived ``httpx.AsyncClient`` (one connection pool,
+    reused across every request) and **must be used as an async context
+    manager** so that pool is opened on a running event loop and closed
+    afterwards::
+
+        async with OllamaLLMClient(config) as client:
+            text = await client.generate("hello")
+
+    Calling :meth:`generate` / :meth:`generate_structured` outside an
+    ``async with`` block raises :class:`RuntimeError`.  The same client may be
+    reused across both the generation and ranking phases of a tournament.
+
+    Concurrency
+    -----------
+    Each client throttles its own in-flight requests, because rate limits live
+    with the provider, not the orchestration.  Two ways to set the limit:
+
+    * **Per-client** — set ``max_concurrency`` on the config; the client builds
+      its own semaphore.
+    * **Shared/global** — pass the *same* :class:`asyncio.Semaphore` instance as
+      ``semaphore=`` to several clients so they draw from one budget.
+
+    The injected ``semaphore`` wins over ``config.max_concurrency``.  If neither
+    is set the client is unbounded.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
         self._config = config
         # Transport is deliberately not set here, it _can_ be set by users
         # at runtime, but it's not a public API and really only used by
         # tests.
         self._transport: httpx.AsyncBaseTransport | None = None
+        self._http: httpx.AsyncClient | None = None
+        self._sem: asyncio.Semaphore | None = semaphore or (
+            asyncio.Semaphore(config.max_concurrency)
+            if config.max_concurrency is not None
+            else None
+        )
 
     @property
     def name(self) -> str:
         """Return the model identifier used as ``author`` in results."""
         return self._config.model_name
+
+    @property
+    def _http_timeout(self) -> float:
+        """Request timeout in seconds.
+
+        Overridden by providers whose config carries a ``timeout`` field.
+        """
+        return 300.0
+
+    def _require_http(self) -> httpx.AsyncClient:
+        """Return the live ``httpx.AsyncClient`` or explain how to open one."""
+        if self._http is None:
+            raise RuntimeError(
+                f"{type(self).__name__} must be used as an async context "
+                "manager: `async with Client(config) as client: ...`"
+            )
+        return self._http
+
+    def _concurrency_guard(self) -> contextlib.AbstractAsyncContextManager[None]:
+        """Acquire the concurrency permit, or a no-op when unbounded."""
+        return self._sem if self._sem is not None else contextlib.nullcontext()
+
+    async def __aenter__(self) -> Self:
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._http_timeout),
+                transport=self._transport,
+            )
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the underlying connection pool."""
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     @abc.abstractmethod
     async def generate(self, prompt: str) -> str:
@@ -142,9 +231,9 @@ class HTTPLLMClient(LLMClient):
     """Shared template for any HTTP+JSON chat API.
 
     Implements the full ``generate`` / ``generate_structured`` flow — build a
-    payload, POST it with retries, extract the text, and (for structured calls)
-    parse it as JSON — in terms of four hooks a subclass fills in for its wire
-    protocol:
+    payload, POST it with retries under the concurrency limit, extract the text,
+    and (for structured calls) parse it as JSON — in terms of four hooks a
+    subclass fills in for its wire protocol:
 
     * :meth:`_endpoint_url` — where to POST.
     * :meth:`_headers` — request headers (auth, content type).
@@ -153,9 +242,18 @@ class HTTPLLMClient(LLMClient):
     * :meth:`_extract_text` — pull the assistant text out of the response body.
     """
 
-    def __init__(self, config: HTTPModelConfig) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: HTTPModelConfig,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, semaphore=semaphore)
         self._http_config = config
+
+    @property
+    def _http_timeout(self) -> float:
+        return self._http_config.timeout
 
     @property
     @abc.abstractmethod
@@ -207,14 +305,12 @@ class HTTPLLMClient(LLMClient):
 
     async def _request(self, payload: dict[str, object]) -> dict[str, object]:
         """POST ``payload`` with retries and return the parsed JSON body."""
-        timeout = httpx.Timeout(self._http_config.timeout)
+        http = self._require_http()
 
         last_err: Exception | None = None
         for attempt in range(self._config.retry_count):
             try:
-                async with httpx.AsyncClient(
-                    timeout=timeout, transport=self._transport
-                ) as http:
+                async with self._concurrency_guard():
                     response = await http.post(
                         self._endpoint_url, json=payload, headers=self._headers
                     )
@@ -263,8 +359,13 @@ class OpenAICompatibleLLMClient(HTTPLLMClient):
 
     _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-    def __init__(self, config: OpenAICompatibleModelConfig) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: OpenAICompatibleModelConfig,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, semaphore=semaphore)
         self._compat_config = config
 
     @property
@@ -331,8 +432,13 @@ class OpenAICompatibleLLMClient(HTTPLLMClient):
 class AnthropicLLMClient(LLMClient):
     """Concrete Anthropic client implementation (not yet wired up)."""
 
-    def __init__(self, config: AnthropicModelConfig) -> None:
-        super().__init__(config)  # pragma: no cover
+    def __init__(
+        self,
+        config: AnthropicModelConfig,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, semaphore=semaphore)  # pragma: no cover
 
     async def generate(self, prompt: str) -> str:
         raise NotImplementedError  # pragma: no cover
@@ -357,8 +463,13 @@ class OllamaLLMClient(HTTPLLMClient):
 
     _DEFAULT_BASE_URL = "http://localhost:11434"
 
-    def __init__(self, config: OllamaModelConfig) -> None:
-        super().__init__(config)
+    def __init__(
+        self,
+        config: OllamaModelConfig,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        super().__init__(config, semaphore=semaphore)
         self._ollama_config = config
 
     @property

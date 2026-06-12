@@ -4,13 +4,14 @@ All reusable test scaffolding lives here so test modules contain only tests:
 
 * :class:`FakeHTTPLLMClient` / ``make_http_client`` — a trivial concrete
   :class:`HTTPLLMClient` for exercising the shared request/template/lifecycle.
-* ``make_handler`` — ``httpx.MockTransport`` handler factory.
+* ``make_handler`` / ``tracking_handler`` — ``httpx.MockTransport`` handlers.
 * ``make_openai_client`` / ``make_ollama_client`` — real provider clients.
 * :class:`MockLLMClient` / ``make_client`` — a canned-response client for the
   orchestration tests.
 * ``make_task`` / ``make_generation`` / ``make_ranking_task`` — data factories.
 """
 
+import asyncio
 import contextlib
 import json
 import uuid
@@ -71,15 +72,21 @@ def make_http_client() -> Callable[..., FakeHTTPLLMClient]:
     """Return a factory that builds :class:`FakeHTTPLLMClient` instances.
 
     Pass an httpx handler to wire up a ``MockTransport``; any other keyword
-    becomes an :class:`HTTPModelConfig` field.
+    becomes an :class:`HTTPModelConfig` field; ``semaphore`` is forwarded to the
+    client.
     """
 
     def _factory(
         handler: Callable[[httpx.Request], httpx.Response] | None = None,
+        *,
+        semaphore: object | None = None,
         **config_kwargs: object,
     ) -> FakeHTTPLLMClient:
         config_kwargs.setdefault("model_name", "fake")
-        client = FakeHTTPLLMClient(HTTPModelConfig(**config_kwargs))  # type: ignore[arg-type]
+        client = FakeHTTPLLMClient(
+            HTTPModelConfig(**config_kwargs),  # type: ignore[arg-type]
+            semaphore=semaphore,  # type: ignore[arg-type]
+        )
         if handler is not None:
             client._transport = httpx.MockTransport(handler)
         return client
@@ -126,6 +133,27 @@ def make_handler() -> Callable[
         return handler, record
 
     return _factory
+
+
+@pytest.fixture
+def tracking_handler() -> tuple[
+    Callable[[httpx.Request], httpx.Response], dict[str, int]
+]:
+    """An async handler that records peak in-flight concurrency.
+
+    Returns ``(handler, state)`` where ``state`` tracks ``"inflight"`` and
+    ``"peak"``.  Share one handler across clients to measure a global cap.
+    """
+    state = {"inflight": 0, "peak": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        await asyncio.sleep(0.01)
+        state["inflight"] -= 1
+        return httpx.Response(200, json={"text": "ok"})
+
+    return handler, state  # type: ignore[return-value]
 
 
 @pytest.fixture

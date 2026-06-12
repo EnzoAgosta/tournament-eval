@@ -25,7 +25,9 @@ from .models import (
 from .orchestration import (
     build_ranking_tasks,
     generate_all,
+    generate_one,
     rank_all,
+    rank_one,
 )
 
 __all__ = [
@@ -45,5 +47,7 @@ __all__ = [
     "StructuredResponse",
     "build_ranking_tasks",
     "generate_all",
+    "generate_one",
     "rank_all",
+    "rank_one",
 ]

@@ -11,21 +11,24 @@ Typical usage::
     )
 
     tasks = [GenerationTask(...), GenerationTask(...)]
-    clients = [OpenAICompatibleLLMClient(...), AnthropicLLMClient(...)]
 
-    generation_results = await generate_all(tasks, clients)
+    # Clients are async context managers (each owns a connection pool).
+    async with OpenAICompatibleLLMClient(...) as a, OpenAICompatibleLLMClient(...) as b:
+        clients = [a, b]
 
-    ranking_tasks = build_ranking_tasks(
-        tasks=tasks,
-        generation_results=generation_results,
-        ranking_prompt="Rank these translations by fluency and accuracy.",
-    )
+        generation_results = await generate_all(tasks, clients)
 
-    ranking_results = await rank_all(
-        ranking_tasks=ranking_tasks,
-        generation_results=generation_results,
-        clients=clients,
-    )
+        ranking_tasks = build_ranking_tasks(
+            tasks=tasks,
+            generation_results=generation_results,
+            ranking_prompt="Rank these translations by fluency and accuracy.",
+        )
+
+        ranking_results = await rank_all(
+            ranking_tasks=ranking_tasks,
+            generation_results=generation_results,
+            clients=clients,
+        )
 """
 
 import asyncio
@@ -161,7 +164,7 @@ def _parse_ranking_response(
     return ranking, reasoning
 
 
-async def _generate_one(
+async def generate_one(
     task: GenerationTask,
     client: LLMClient,
 ) -> tuple[uuid.UUID, str, GenerationResult | BaseException]:
@@ -169,6 +172,11 @@ async def _generate_one(
 
     Returns ``(task_id, client_name, result_or_error)`` so the caller can
     correlate failures even when exceptions are returned alongside successes.
+
+    Concurrency is the client's concern: if the client was given a
+    ``max_concurrency`` (or a shared semaphore), this call self-throttles.  That
+    means a hand-rolled loop over :func:`generate_one` gets the same bounding as
+    :func:`generate_all` for free.
     """
     try:
         raw = await client.generate(task.generation_prompt)
@@ -215,7 +223,7 @@ async def generate_all(
         ``failures`` maps ``(task_id, client_name)`` to the exception that
         was raised so the caller can decide what to do.
     """
-    coros = [_generate_one(task, client) for task in tasks for client in clients]
+    coros = [generate_one(task, client) for task in tasks for client in clients]
     outcomes = await asyncio.gather(*coros)
 
     generation_results: list[GenerationResult] = []
@@ -281,7 +289,7 @@ def build_ranking_tasks(
     return ranking_tasks
 
 
-async def _rank_one(
+async def rank_one(
     ranking_task: RankingTask,
     client: LLMClient,
     generation_lookup: dict[uuid.UUID, GenerationResult],
@@ -289,6 +297,9 @@ async def _rank_one(
     """Call a single client as judge for a single RankingTask.
 
     Returns ``(ranking_task_id, client_name, result_or_error)``.
+
+    Like :func:`generate_one`, concurrency is bounded by the client itself, so a
+    custom loop over :func:`rank_one` is throttled the same as :func:`rank_all`.
     """
     prompt = _build_judge_prompt(ranking_task, generation_lookup)
 
@@ -358,7 +369,7 @@ async def rank_all(
     generation_lookup = _build_generation_lookup(generation_results)
 
     coros = [
-        _rank_one(ranking_task, client, generation_lookup)
+        rank_one(ranking_task, client, generation_lookup)
         for ranking_task in ranking_tasks
         for client in clients
     ]
