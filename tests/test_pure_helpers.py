@@ -1,6 +1,5 @@
 """Unit tests for pure helper functions (no LLM calls, no async, no I/O)."""
 
-
 import pytest
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
