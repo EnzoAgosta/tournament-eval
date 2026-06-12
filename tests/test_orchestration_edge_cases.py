@@ -17,18 +17,18 @@ class TestGenerateAllEdgeCases:
     async def test_empty_tasks(self) -> None:
         results, failures = await generate_all([], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
     async def test_empty_clients(self, make_task) -> None:
         tasks = [make_task("p1")]
         results, failures = await generate_all(tasks, [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
     async def test_empty_everything(self) -> None:
         results, failures = await generate_all([], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
 
 class TestRankAllEdgeCases:
@@ -36,7 +36,7 @@ class TestRankAllEdgeCases:
         gen = make_generation()
         results, failures = await rank_all([], [gen], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
     async def test_empty_clients(self, make_generation) -> None:
         gen = make_generation()
@@ -47,7 +47,7 @@ class TestRankAllEdgeCases:
         )
         results, failures = await rank_all([ranking_task], [gen], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
     async def test_empty_generations(self) -> None:
         ranking_task = RankingTask(
@@ -57,12 +57,12 @@ class TestRankAllEdgeCases:
         )
         results, failures = await rank_all([ranking_task], [], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
     async def test_empty_everything(self) -> None:
         results, failures = await rank_all([], [], [])
         assert results == []
-        assert failures == {}
+        assert failures == []
 
 
 class TestBuildRankingTasksEdgeCases:

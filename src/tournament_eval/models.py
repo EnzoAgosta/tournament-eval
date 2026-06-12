@@ -1,5 +1,6 @@
 import dataclasses
 import uuid
+from typing import TypedDict
 
 
 class LetterGenerator:
@@ -18,6 +19,11 @@ class LetterGenerator:
         return result
 
 
+class GenerationTaskDict(TypedDict):
+    id: str
+    generation_prompt: str
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class GenerationTask:
     """A user-created description of what to evaluate.
@@ -30,6 +36,53 @@ class GenerationTask:
     """Unique identifier for this task."""
     generation_prompt: str
     """The creative task to be given to each model."""
+
+    @classmethod
+    def from_json(cls, data: GenerationTaskDict) -> GenerationTask:
+        return cls(
+            id=uuid.UUID(data["id"]),
+            generation_prompt=data["generation_prompt"],
+        )
+
+
+class GenerationFailureDict(TypedDict):
+    task_id: str
+    author: str
+    error_type: str
+    message: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GenerationFailure:
+    """A single model's failure to generate a :class:`GenerationResult`."""
+
+    task_id: uuid.UUID
+    """Unique identifier for this failure."""
+    author: str
+    """The model identifier that failed to generate this result."""
+    error_type: str
+    """The type of error that occurred."""
+    message: str
+    """The error message."""
+
+    @classmethod
+    def from_json(cls, data: GenerationFailureDict) -> GenerationFailure:
+        return cls(
+            task_id=uuid.UUID(data["task_id"]),
+            author=data["author"],
+            error_type=data["error_type"],
+            message=data["message"],
+        )
+
+
+class GenerationResultDict(TypedDict):
+    id: str
+    task_id: str
+    generation_prompt: str
+    raw_response: str
+    output: str
+    author: str
+    metadata: dict[str, object]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -51,6 +104,24 @@ class GenerationResult:
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
     """Arbitrary extra data such as cost, latency, or token count."""
 
+    @classmethod
+    def from_json(cls, data: GenerationResultDict) -> GenerationResult:
+        return cls(
+            id=uuid.UUID(data["id"]),
+            task_id=uuid.UUID(data["task_id"]),
+            generation_prompt=data["generation_prompt"],
+            raw_response=data["raw_response"],
+            output=data["output"],
+            author=data["author"],
+            metadata=data["metadata"],
+        )
+
+
+class RankingTaskDict(TypedDict):
+    id: str
+    ranking_prompt: str
+    generations: dict[str, str]
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RankingTask:
@@ -67,6 +138,58 @@ class RankingTask:
     generations: dict[str, uuid.UUID]
     """Mapping of anonymized aliases (e.g. ``"A"``, ``"B"``) to
     :class:`GenerationResult` IDs."""
+
+    @classmethod
+    def from_json(cls, data: RankingTaskDict) -> RankingTask:
+        return cls(
+            id=uuid.UUID(data["id"]),
+            ranking_prompt=data["ranking_prompt"],
+            generations={
+                alias: uuid.UUID(gid) for alias, gid in data["generations"].items()
+            },
+        )
+
+
+class RankingFailureDict(TypedDict):
+    ranking_task_id: str
+    author: str
+    error_type: str
+    message: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RankingFailure:
+    """A single model's failure to rank a :class:`RankingResult`."""
+
+    ranking_task_id: uuid.UUID
+    """The :class:`RankingTask` that was used to produce this ranking."""
+    author: str
+    """The model identifier that failed to rank this result."""
+    error_type: str
+    """The type of error that occurred."""
+    message: str
+    """The error message."""
+
+    @classmethod
+    def from_json(cls, data: RankingFailureDict) -> RankingFailure:
+        return cls(
+            ranking_task_id=uuid.UUID(data["ranking_task_id"]),
+            author=data["author"],
+            error_type=data["error_type"],
+            message=data["message"],
+        )
+
+
+class RankingResultDict(TypedDict):
+    id: str
+    ranking_task_id: str
+    ranking_prompt: str
+    author: str
+    raw_model_ranking: list[str]
+    ranking: list[str]
+    reasoning: str | None
+    raw_response: str
+    metadata: dict[str, object]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -94,3 +217,17 @@ class RankingResult:
     """The complete structured JSON response returned by the LLM."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
     """Arbitrary extra data such as cost, latency, or token count."""
+
+    @classmethod
+    def from_json(cls, data: RankingResultDict) -> RankingResult:
+        return cls(
+            id=uuid.UUID(data["id"]),
+            ranking_task_id=uuid.UUID(data["ranking_task_id"]),
+            ranking_prompt=data["ranking_prompt"],
+            author=data["author"],
+            raw_model_ranking=data["raw_model_ranking"],
+            ranking=[uuid.UUID(gid) for gid in data["ranking"]],
+            reasoning=data["reasoning"],
+            raw_response=data["raw_response"],
+            metadata=data["metadata"],
+        )
