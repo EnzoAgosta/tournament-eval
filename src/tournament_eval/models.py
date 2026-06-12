@@ -39,6 +39,7 @@ class GenerationTask:
 
     @classmethod
     def from_json(cls, data: GenerationTaskDict) -> GenerationTask:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
             generation_prompt=data["generation_prompt"],
@@ -57,7 +58,7 @@ class GenerationFailure:
     """A single model's failure to generate a :class:`GenerationResult`."""
 
     task_id: uuid.UUID
-    """Unique identifier for this failure."""
+    """The :class:`GenerationTask` this failure is for."""
     author: str
     """The model identifier that failed to generate this result."""
     error_type: str
@@ -67,6 +68,7 @@ class GenerationFailure:
 
     @classmethod
     def from_json(cls, data: GenerationFailureDict) -> GenerationFailure:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             task_id=uuid.UUID(data["task_id"]),
             author=data["author"],
@@ -106,6 +108,7 @@ class GenerationResult:
 
     @classmethod
     def from_json(cls, data: GenerationResultDict) -> GenerationResult:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
             task_id=uuid.UUID(data["task_id"]),
@@ -141,6 +144,7 @@ class RankingTask:
 
     @classmethod
     def from_json(cls, data: RankingTaskDict) -> RankingTask:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
             ranking_prompt=data["ranking_prompt"],
@@ -162,7 +166,7 @@ class RankingFailure:
     """A single model's failure to rank a :class:`RankingResult`."""
 
     ranking_task_id: uuid.UUID
-    """The :class:`RankingTask` that was used to produce this ranking."""
+    """The :class:`RankingTask` this failure is for."""
     author: str
     """The model identifier that failed to rank this result."""
     error_type: str
@@ -172,6 +176,7 @@ class RankingFailure:
 
     @classmethod
     def from_json(cls, data: RankingFailureDict) -> RankingFailure:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             ranking_task_id=uuid.UUID(data["ranking_task_id"]),
             author=data["author"],
@@ -220,6 +225,7 @@ class RankingResult:
 
     @classmethod
     def from_json(cls, data: RankingResultDict) -> RankingResult:
+        """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
             ranking_task_id=uuid.UUID(data["ranking_task_id"]),

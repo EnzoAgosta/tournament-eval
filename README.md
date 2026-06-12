@@ -154,7 +154,7 @@ The pipeline is three pure-ish async functions, each a clean stage:
 | Build | `build_ranking_tasks` | generations grouped per task, aliased → `RankingTask`s |
 | Rank | `rank_all` | ranking tasks × clients → `RankingResult`s |
 
-Every stage fans its work out concurrently with `asyncio.gather`. Failures aren't thrown — each stage returns a `(results, failures)` pair, where `failures` maps `(task_id, model_name)` to the exception that was raised. One model timing out or returning garbage doesn't sink the run; it just shows up in the failures map for you to handle.
+Every stage fans its work out concurrently with `asyncio.gather`. Failures aren't thrown — each stage returns a `(results, failures)` pair of lists, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing `task_id`/`ranking_task_id`, the `author`, and the error type and message. One model timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
 
 Judge responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best-guess.
 
@@ -192,6 +192,40 @@ async with OllamaLLMClient(OllamaModelConfig(model_name="llama3.2")) as client:
     text = await client.generate("hello")
 # for a list of clients, see the quickstart's AsyncExitStack
 ```
+
+## Persistence & resume
+
+A tournament is expensive — many model calls — so the pipeline can stream every result and failure to disk *as it lands*. Pass `output=<dir>` and the run becomes a directory of JSON Lines files, split by record type and (for the per-model streams) by author:
+
+```
+run/
+  generation_tasks.jsonl             # your inputs — you persist these
+  generations/<model>.jsonl          # one result per line, appended as it completes
+  generation_failures/<model>.jsonl
+  ranking_tasks.jsonl
+  rankings/<judge>.jsonl
+  ranking_failures/<judge>.jsonl
+```
+
+```python
+results, failures = await generate_all(tasks, clients, output="run")
+```
+
+Each write is a single synchronous append, so a process that dies mid-run keeps everything finished so far. **Resume** by handing back the pairs already on disk via `skip`:
+
+```python
+from tournament_eval import read_generation_result_file
+
+done = {
+    (r.task_id, r.author)
+    for r in read_generation_result_file("run/generations/llama3.2.jsonl")
+}
+results, failures = await generate_all(tasks, clients, output="run", skip=done)
+```
+
+Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. **Tasks are yours to persist** (`append_generation_task`), with one exception: ranking tasks carry a random alias assignment, so `build_ranking_tasks(..., output="run")` writes them once and you reload them with `read_ranking_task_file` on resume rather than rebuilding (a rebuild would re-shuffle and orphan everything already judged).
+
+Aggregation is deliberately left to you — see below.
 
 ## Status
 
