@@ -1,9 +1,9 @@
 """Unit tests for pure helper functions (no LLM calls, no async, no I/O)."""
 
-from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
 from tournament_eval.models import LetterGenerator
 from tournament_eval.orchestration import (
     _build_generation_lookup,
@@ -11,12 +11,6 @@ from tournament_eval.orchestration import (
     _parse_ranking_response,
     build_ranking_tasks,
 )
-
-if TYPE_CHECKING:
-    from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
-
-
-# ── LetterGenerator ──────────────────────────
 
 
 def test_letter_generator_sequence() -> None:
@@ -33,9 +27,6 @@ def test_letter_generator_wraps_after_z() -> None:
     assert gen.get_next_letter() == "Z"
     assert gen.get_next_letter() == "AA"
     assert gen.get_next_letter() == "AB"
-
-
-# ── _parse_ranking_response ──────────────────
 
 
 class TestParseRankingResponse:
@@ -66,7 +57,7 @@ class TestParseRankingResponse:
 
     def test_not_a_dict(self) -> None:
         with pytest.raises(ValueError, match="Expected JSON object"):
-            _parse_ranking_response(["A"], {"A"})  # type: ignore[arg-type]
+            _parse_ranking_response(["A"], {"A"})
 
     def test_ranking_not_a_list(self) -> None:
         with pytest.raises(ValueError, match='"ranking" must be a list'):
@@ -81,9 +72,6 @@ class TestParseRankingResponse:
             _parse_ranking_response({"ranking": ["A"], "reasoning": 42}, {"A"})
 
 
-# ── _build_generation_lookup ─────────────────
-
-
 def test_lookup_indexes_by_id(make_generation: _MakeGeneration) -> None:
     r1 = make_generation(author="a")
     r2 = make_generation(author="b")
@@ -94,9 +82,6 @@ def test_lookup_indexes_by_id(make_generation: _MakeGeneration) -> None:
 
 def test_lookup_empty() -> None:
     assert _build_generation_lookup([]) == {}
-
-
-# ── _build_judge_prompt ──────────────────────
 
 
 def test_prompt_includes_rubric_and_candidates(
@@ -114,9 +99,6 @@ def test_prompt_includes_rubric_and_candidates(
     assert "A. hello" in prompt
     assert "B. world" in prompt
     assert '"ranking"' in prompt
-
-
-# ── build_ranking_tasks ──────────────────────
 
 
 class TestBuildRankingTasks:

@@ -1,4 +1,18 @@
-"""LLM client abstractions and provider implementations."""
+"""LLM client abstractions and provider implementations.
+
+Layering
+--------
+* :class:`LLMClient` — provider-agnostic base: the abstract ``generate`` /
+  ``generate_structured`` contract.  Knows nothing about any wire protocol.
+* :class:`HTTPLLMClient` — the shared template for any HTTP+JSON chat API:
+  build a payload, POST it with retries, pull the text back out, and (for
+  structured calls) parse JSON.  Subclasses fill in four small hooks.
+* :class:`OpenAICompatibleLLMClient` / :class:`OllamaLLMClient` — sibling
+  implementations of those hooks for two different wire protocols.
+
+Adding a provider is implementing four hooks on :class:`HTTPLLMClient`:
+``_endpoint_url``, ``_headers``, ``_build_payload`` and ``_extract_text``.
+"""
 
 import abc
 import asyncio
@@ -39,22 +53,34 @@ class ModelConfig:
 
 
 @dataclasses.dataclass(frozen=True)
-class OpenAIModelConfig(ModelConfig):
-    """OpenAI-specific configuration."""
+class HTTPModelConfig(ModelConfig):
+    """Configuration shared by every HTTP+JSON provider (see :class:`HTTPLLMClient`)."""
 
-    api_key: str | None = None
-    """OpenAI API key.  Falls back to environment variable if ``None``."""
     base_url: str | None = None
-    """Optional custom base URL (e.g. for proxies or Azure)."""
-    seed: int | None = None
-    """Optional seed for deterministic sampling."""
+    """Server base URL.  ``None`` lets the client fall back to its own default."""
     timeout: float = 300.0
     """Request timeout in seconds (default 5 minutes)."""
 
 
 @dataclasses.dataclass(frozen=True)
+class OpenAICompatibleModelConfig(HTTPModelConfig):
+    """Configuration for any OpenAI-compatible ``/chat/completions`` server.
+
+    Covers the official OpenAI API and the growing field of servers that speak
+    the same protocol (``mlx_lm.server``, vLLM, llama.cpp, ...).  Point
+    ``base_url`` at the server's ``/v1`` root.
+    """
+
+    api_key: str | None = None
+    """API key.  Falls back to the ``OPENAI_API_KEY`` environment variable if
+    ``None``.  Local servers usually ignore it."""
+    seed: int | None = None
+    """Optional seed for deterministic sampling."""
+
+
+@dataclasses.dataclass(frozen=True)
 class AnthropicModelConfig(ModelConfig):
-    """Anthropic-specific configuration."""
+    """Anthropic-specific configuration. Stub only until client is wired up."""
 
     api_key: str | None = None
     """Anthropic API key.  Falls back to environment variable if ``None``."""
@@ -63,25 +89,33 @@ class AnthropicModelConfig(ModelConfig):
 
 
 @dataclasses.dataclass(frozen=True)
-class OllamaModelConfig(ModelConfig):
-    """Ollama-specific configuration."""
+class OllamaModelConfig(HTTPModelConfig):
+    """Ollama configuration, using its native ``/api/chat`` endpoint.
 
-    base_url: str = "http://localhost:11434"
+    The native API accepts a full JSON schema in its ``format`` field, giving
+    grammar-constrained structured output.
+    """
+
+    base_url: str | None = "http://localhost:11434"
     """Ollama server base URL.  Defaults to the local default port."""
-    timeout: float = 300.0
-    """Request timeout in seconds (default 5 minutes)."""
+    seed: int | None = None
+    """Optional seed for deterministic sampling."""
 
 
 class LLMClient(abc.ABC):
     """Abstract base class for LLM provider wrappers.
 
-    Each concrete subclass is paired with a specific
-    :class:`ModelConfig` subclass (e.g. :class:`OpenAIClient` with
-    :class:`OpenAIModelConfig`).
+    Provider-agnostic on purpose: it declares the ``generate`` /
+    ``generate_structured`` contract but knows nothing about any wire protocol.
+    HTTP+JSON providers should subclass :class:`HTTPLLMClient` rather than this
+    directly.
     """
 
     def __init__(self, config: ModelConfig) -> None:
         self._config = config
+        # Transport is deliberately not set here, it _can_ be set by users
+        # at runtime, but it's not a public API and really only used by
+        # tests.
         self._transport: httpx.AsyncBaseTransport | None = None
 
     @property
@@ -104,100 +138,177 @@ class LLMClient(abc.ABC):
         ...
 
 
-class OpenAILLMClient(LLMClient):
-    """Concrete OpenAI-compatible client.
+class HTTPLLMClient(LLMClient):
+    """Shared template for any HTTP+JSON chat API.
 
-    Talks to any OpenAI-compatible ``/chat/completions`` endpoint: the official
-    OpenAI API, or a local server such as ``mlx_lm.server`` (point ``base_url``
-    at its ``/v1`` root).  ``generate`` returns plain text; ``generate_structured``
-    uses native Structured Outputs (``response_format`` with a ``json_schema`` and
-    ``strict: true``).
+    Implements the full ``generate`` / ``generate_structured`` flow — build a
+    payload, POST it with retries, extract the text, and (for structured calls)
+    parse it as JSON — in terms of four hooks a subclass fills in for its wire
+    protocol:
+
+    * :meth:`_endpoint_url` — where to POST.
+    * :meth:`_headers` — request headers (auth, content type).
+    * :meth:`_build_payload` — the request body; ``schema`` is non-``None`` for
+      structured calls so the subclass can request constrained/JSON output.
+    * :meth:`_extract_text` — pull the assistant text out of the response body.
     """
 
-    _DEFAULT_BASE_URL = "https://api.openai.com/v1"
-
-    def __init__(self, config: OpenAIModelConfig) -> None:
+    def __init__(self, config: HTTPModelConfig) -> None:
         super().__init__(config)
-        self._openai_config = config
-        self._transport: httpx.AsyncBaseTransport | None = None
+        self._http_config = config
 
     @property
-    def _url(self) -> str:
-        base = self._openai_config.base_url or self._DEFAULT_BASE_URL
-        return f"{base.rstrip('/')}/chat/completions"
+    @abc.abstractmethod
+    def _endpoint_url(self) -> str:
+        """The full URL to POST requests to."""
+        ...
 
     @property
+    @abc.abstractmethod
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
-        key = self._openai_config.api_key or os.environ.get("OPENAI_API_KEY")
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        return headers
+        """Headers to send with each request."""
+        ...
+
+    @abc.abstractmethod
+    def _build_payload(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Build the request body.
+
+        ``schema`` is ``None`` for plain generation and the desired JSON schema
+        for structured generation; subclasses use it to request constrained or
+        JSON-mode output in whatever dialect their server speaks.
+        """
+        ...
+
+    @abc.abstractmethod
+    def _extract_text(self, body: dict[str, object]) -> str:
+        """Extract the assistant's text from a parsed response body."""
+        ...
 
     def _messages(self, prompt: str) -> list[dict[str, str]]:
-        """Build the chat ``messages`` array, prepending a system turn if set."""
+        """Build a ``[{"role", "content"}]`` chat array, system turn first if set.
+
+        An *opt-in* helper, not one of the hooks: it encodes the role/content
+        convention shared by OpenAI-compatible servers and Ollama, so their
+        ``_build_payload`` implementations can just call it.  Providers that
+        diverge should build their payload directly instead — e.g. Anthropic
+        takes ``system`` as a top-level parameter rather than a turn, and Gemini
+        uses a different ``contents``/``parts`` shape entirely.
+        """
         messages: list[dict[str, str]] = []
-        if self._openai_config.system_prompt is not None:
-            messages.append(
-                {"role": "system", "content": self._openai_config.system_prompt}
-            )
+        if self._config.system_prompt is not None:
+            messages.append({"role": "system", "content": self._config.system_prompt})
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    def _payload(
-        self,
-        prompt: str,
-        *,
-        response_format: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        """Build the JSON body for a ``/chat/completions`` request."""
-        payload: dict[str, object] = {
-            "model": self._openai_config.model_name,
-            "messages": self._messages(prompt),
-            "stream": False,
-        }
-        if self._openai_config.temperature is not None:
-            payload["temperature"] = self._openai_config.temperature
-        if self._openai_config.max_tokens is not None:
-            payload["max_tokens"] = self._openai_config.max_tokens
-        if self._openai_config.seed is not None:
-            payload["seed"] = self._openai_config.seed
-        if response_format is not None:
-            payload["response_format"] = response_format
-        return payload
-
-    async def _request(
-        self,
-        prompt: str,
-        *,
-        response_format: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        """Send a request with retries and return the parsed JSON body."""
-        payload = self._payload(prompt, response_format=response_format)
-        timeout = httpx.Timeout(self._openai_config.timeout)
+    async def _request(self, payload: dict[str, object]) -> dict[str, object]:
+        """POST ``payload`` with retries and return the parsed JSON body."""
+        timeout = httpx.Timeout(self._http_config.timeout)
 
         last_err: Exception | None = None
-        for attempt in range(self._openai_config.retry_count):
+        for attempt in range(self._config.retry_count):
             try:
                 async with httpx.AsyncClient(
                     timeout=timeout, transport=self._transport
-                ) as client:
-                    response = await client.post(
-                        self._url, json=payload, headers=self._headers
+                ) as http:
+                    response = await http.post(
+                        self._endpoint_url, json=payload, headers=self._headers
                     )
                     response.raise_for_status()
                     body: dict[str, object] = response.json()
                     return body
             except Exception as exc:
                 last_err = exc
-                if attempt < self._openai_config.retry_count - 1:
+                if attempt < self._config.retry_count - 1:
                     await asyncio.sleep(2**attempt)
 
         assert last_err is not None, "Somehow never returned with no exception"
         raise last_err
 
-    @staticmethod
-    def _content(body: dict[str, object]) -> str:
+    async def generate(self, prompt: str) -> str:
+        """Send a plain-text prompt and return the response text."""
+        body = await self._request(self._build_payload(prompt))
+        return self._extract_text(body)
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+    ) -> StructuredResponse:
+        """Send a prompt and return a structured (JSON) response.
+
+        The ``schema`` is handed to :meth:`_build_payload`; the client itself
+        only guarantees the response parses to a JSON object.
+        """
+        body = await self._request(self._build_payload(prompt, schema=schema))
+        raw = self._extract_text(body)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+        return StructuredResponse(data=parsed, raw=raw)
+
+
+class OpenAICompatibleLLMClient(HTTPLLMClient):
+    """Client for any OpenAI-compatible ``/chat/completions`` endpoint.
+
+    Talks to the official OpenAI API or any server that speaks the same protocol
+    (``mlx_lm.server``, vLLM, ...): point ``base_url`` at the server's ``/v1``
+    root.  Structured output uses ``response_format`` with a strict
+    ``json_schema``.
+    """
+
+    _DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+    def __init__(self, config: OpenAICompatibleModelConfig) -> None:
+        super().__init__(config)
+        self._compat_config = config
+
+    @property
+    def _endpoint_url(self) -> str:
+        base = self._compat_config.base_url or self._DEFAULT_BASE_URL
+        return f"{base.rstrip('/')}/chat/completions"
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        key = self._compat_config.api_key or os.environ.get("OPENAI_API_KEY")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _build_payload(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": self._compat_config.model_name,
+            "messages": self._messages(prompt),
+            "stream": False,
+        }
+        if self._compat_config.temperature is not None:
+            payload["temperature"] = self._compat_config.temperature
+        if self._compat_config.max_tokens is not None:
+            payload["max_tokens"] = self._compat_config.max_tokens
+        if self._compat_config.seed is not None:
+            payload["seed"] = self._compat_config.seed
+        if schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": schema,
+                    "strict": True,
+                },
+            }
+        return payload
+
+    def _extract_text(self, body: dict[str, object]) -> str:
         """Extract the assistant message text from a chat-completions body."""
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -216,40 +327,9 @@ class OpenAILLMClient(LLMClient):
             raise ValueError("OpenAI response 'content' is not a string")
         return content
 
-    async def generate(self, prompt: str) -> str:
-        """Send a plain-text prompt and return the response text."""
-        body = await self._request(prompt)
-        return self._content(body)
-
-    async def generate_structured(
-        self,
-        prompt: str,
-        schema: dict[str, object],
-    ) -> StructuredResponse:
-        """Send a prompt and return a structured (JSON) response.
-
-        The ``schema`` is passed as a ``response_format`` ``json_schema`` with
-        ``strict: true``; a schema-enforcing endpoint then guarantees conformance
-        at the API boundary.  Only syntactic validity is the client's concern.
-        """
-        response_format: dict[str, object] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "structured_response",
-                "schema": schema,
-                "strict": True,
-            },
-        }
-        body = await self._request(prompt, response_format=response_format)
-        raw = self._content(body)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
-
 
 class AnthropicLLMClient(LLMClient):
-    """Concrete Anthropic client implementation."""
+    """Concrete Anthropic client implementation (not yet wired up)."""
 
     def __init__(self, config: AnthropicModelConfig) -> None:
         super().__init__(config)  # pragma: no cover
@@ -265,87 +345,64 @@ class AnthropicLLMClient(LLMClient):
         raise NotImplementedError  # pragma: no cover
 
 
-class OllamaLLMClient(LLMClient):
-    """Concrete Ollama client implementation.
+class OllamaLLMClient(HTTPLLMClient):
+    """Ollama, via its native ``/api/chat`` endpoint.
 
-    Talks to a local (or remote) Ollama server via its native ``/api/generate``
-    endpoint.  Supports both plain text and JSON-structured generation.
+    A sibling of :class:`OpenAICompatibleLLMClient`, not a subclass: Ollama
+    speaks its own wire protocol.  The payoff is structured output via the
+    native ``format`` field, which accepts a full JSON schema and so constrains
+    decoding to it — stronger than the OpenAI-compatible endpoint, which ignores
+    ``json_schema``.
     """
+
+    _DEFAULT_BASE_URL = "http://localhost:11434"
 
     def __init__(self, config: OllamaModelConfig) -> None:
         super().__init__(config)
         self._ollama_config = config
-        self._transport: httpx.AsyncBaseTransport | None = None
 
     @property
-    def _url(self) -> str:
-        return f"{self._ollama_config.base_url}/api/generate"
+    def _endpoint_url(self) -> str:
+        base = self._ollama_config.base_url or self._DEFAULT_BASE_URL
+        return f"{base.rstrip('/')}/api/chat"
 
-    def _payload(self, prompt: str, *, format_json: bool = False) -> dict[str, object]:
-        """Build the JSON body for an ``/api/generate`` request."""
-        payload: dict[str, object] = {
-            "model": self._ollama_config.model_name,
-            "prompt": prompt,
-            "stream": False,
-            "options": {},
-        }
-        if self._ollama_config.temperature is not None:
-            payload["options"]["temperature"] = self._ollama_config.temperature  # type: ignore[index]
-        if self._ollama_config.max_tokens is not None:
-            payload["options"]["num_predict"] = self._ollama_config.max_tokens  # type: ignore[index]
-        if self._ollama_config.system_prompt is not None:
-            payload["system"] = self._ollama_config.system_prompt
-        if format_json:
-            payload["format"] = "json"
-        return payload
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json"}
 
-    async def _request(
+    def _build_payload(
         self,
         prompt: str,
         *,
-        format_json: bool = False,
+        schema: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        """Send a request to Ollama with retries and return the parsed JSON body."""
-        payload = self._payload(prompt, format_json=format_json)
-        timeout = httpx.Timeout(self._ollama_config.timeout)
+        options: dict[str, object] = {}
+        if self._ollama_config.temperature is not None:
+            options["temperature"] = self._ollama_config.temperature
+        if self._ollama_config.max_tokens is not None:
+            options["num_predict"] = self._ollama_config.max_tokens
+        if self._ollama_config.seed is not None:
+            options["seed"] = self._ollama_config.seed
 
-        last_err: Exception | None = None
-        for attempt in range(self._ollama_config.retry_count):
-            try:
-                async with httpx.AsyncClient(
-                    timeout=timeout, transport=self._transport
-                ) as client:
-                    response = await client.post(self._url, json=payload)
-                    response.raise_for_status()
-                    body: dict[str, object] = response.json()
-                    return body
-            except Exception as exc:
-                last_err = exc
-                if attempt < self._ollama_config.retry_count - 1:
-                    await asyncio.sleep(2**attempt)
+        payload: dict[str, object] = {
+            "model": self._ollama_config.model_name,
+            "messages": self._messages(prompt),
+            "stream": False,
+            "options": options,
+        }
+        # Ollama's native `format` takes a JSON schema directly and constrains
+        # decoding to it; the orchestration layer also restates the shape in the
+        # prompt as a belt-and-braces measure.
+        if schema is not None:
+            payload["format"] = schema
+        return payload
 
-        assert last_err is not None
-        raise last_err
-
-    async def generate(self, prompt: str) -> str:
-        """Send a plain-text prompt and return the raw response string."""
-        data = await self._request(prompt)
-        return str(data["response"])
-
-    async def generate_structured(
-        self,
-        prompt: str,
-        _schema: dict[str, object],
-    ) -> StructuredResponse:
-        """Send a prompt and return a structured (JSON) response.
-
-        Uses Ollama's ``format: "json"`` mode.  The schema is embedded in the
-        prompt text by the orchestration layer; this method only enforces
-        valid JSON output.
-        """
-        data = await self._request(prompt, format_json=True)
-        raw_text = str(data["response"])
-        parsed = json.loads(raw_text)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw_text)
+    def _extract_text(self, body: dict[str, object]) -> str:
+        """Extract the assistant text from an ``/api/chat`` response body."""
+        message = body.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Ollama response missing 'message'")
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise ValueError("Ollama response 'content' is not a string")
+        return content

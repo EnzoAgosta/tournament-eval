@@ -5,12 +5,14 @@ every model generates outputs, then every model judges all outputs.
 """
 
 from .llm import (
+    HTTPLLMClient,
+    HTTPModelConfig,
     LLMClient,
     ModelConfig,
     OllamaLLMClient,
     OllamaModelConfig,
-    OpenAILLMClient,
-    OpenAIModelConfig,
+    OpenAICompatibleLLMClient,
+    OpenAICompatibleModelConfig,
     StructuredResponse,
 )
 from .models import (
@@ -29,13 +31,15 @@ from .orchestration import (
 __all__ = [
     "GenerationResult",
     "GenerationTask",
+    "HTTPLLMClient",
+    "HTTPModelConfig",
     "LLMClient",
     "LetterGenerator",
     "ModelConfig",
     "OllamaLLMClient",
     "OllamaModelConfig",
-    "OpenAILLMClient",
-    "OpenAIModelConfig",
+    "OpenAICompatibleLLMClient",
+    "OpenAICompatibleModelConfig",
     "RankingResult",
     "RankingTask",
     "StructuredResponse",

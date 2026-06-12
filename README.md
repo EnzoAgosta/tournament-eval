@@ -73,7 +73,7 @@ Same pipeline, same data model. Who generates and who judges are just two lists 
 
 ## Quickstart
 
-Requires Python 3.14+ and a running [Ollama](https://ollama.com) server. Ollama is the only client implemented today (see [Status](#status)).
+Requires Python 3.14+ and any OpenAI-compatible model server. The quickstart uses a local [Ollama](https://ollama.com) server; see [Status](#status) for the full client story.
 
 ```bash
 git clone https://github.com/<you>/tournament-eval.git
@@ -136,8 +136,6 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-See [`test_e2e.py`](test_e2e.py) for a slightly fuller version.
-
 ## How it works
 
 The pipeline is three pure-ish async functions, each a clean stage:
@@ -156,15 +154,20 @@ Judge responses are validated strictly: the ranking must list every candidate ex
 
 This is an early, honest-about-it project.
 
-- **Ollama** is fully implemented and is what the quickstart uses.
-- **OpenAI** and **Anthropic** have config classes in place but their clients aren't implemented yet. The `LLMClient` abstract base is small and the Ollama client is a ~80-line reference, so adding a provider is mostly a matter of wiring up its HTTP call.
+Clients are layered so a new provider is four small methods, not a rewrite:
+
+- **`LLMClient`** — the provider-agnostic base: just the `generate` / `generate_structured` contract. No wire-protocol knowledge.
+- **`HTTPLLMClient`** — the shared template for any HTTP+JSON chat API: build a payload, POST with retries, extract the text, parse JSON. A provider implements four hooks: `_endpoint_url`, `_headers`, `_build_payload`, `_extract_text`.
+- **`OpenAICompatibleLLMClient`** — the workhorse, for anything speaking the OpenAI `/chat/completions` protocol (the official API, `mlx_lm.server`, vLLM, llama.cpp). Point `base_url` at the server's `/v1` root; structured output uses a strict `json_schema`.
+- **`OllamaLLMClient`** — a *sibling*, not a subclass: Ollama speaks its own protocol on `/api/chat`. The payoff is structured output via Ollama's native `format` field, which takes a full JSON schema and **constrains decoding** to it — stronger than the OpenAI-compatible endpoint, which ignores `json_schema`.
+- **Anthropic** has a config class and a stub client, but the Messages API isn't wired up yet — it'll land as another `HTTPLLMClient` sibling.
 - **Aggregation math is intentionally out of scope.** The framework hands you the rankings and the reasoning. You own the question of how to collapse them into a verdict — and that choice is a real methodological decision, not a detail to bury in a library.
 
 ## Tested, minimal, extensible
 
 - 100% source coverage, fully type-checked (`mypy --strict`) and linted (`ruff`).
 - Pure async functions, no hidden global state.
-- One concrete client (Ollama); an abstract base ready for OpenAI, Anthropic, and beyond.
+- A layered client hierarchy — agnostic base, HTTP+JSON template, one provider = four hooks.
 
 ```bash
 uv run pytest          # tests

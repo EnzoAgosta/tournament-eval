@@ -2,11 +2,8 @@
 
 import uuid
 from collections.abc import Callable
-from typing import Protocol
 
-import pytest
-
-from tournament_eval.llm import LLMClient, StructuredResponse
+from tests.conftest import MockLLMClient
 from tournament_eval.models import (
     GenerationResult,
     GenerationTask,
@@ -18,75 +15,6 @@ from tournament_eval.orchestration import (
     generate_all,
     rank_all,
 )
-
-
-class _MockResponses(Protocol):
-    """Protocol for the mock client's response dicts."""
-
-    generate: dict[str, str]
-    structured: dict[str, dict[str, object]]
-
-
-class MockLLMClient(LLMClient):
-    """A fake LLM client for testing that returns pre-configured responses."""
-
-    def __init__(
-        self,
-        name: str,
-        *,
-        generate_responses: dict[str, str] | None = None,
-        structured_responses: dict[str, dict[str, object]] | None = None,
-        fail_on: set[str] | None = None,
-    ) -> None:
-        # Bypass the normal ABC init; we don't need a real ModelConfig
-        self._name = name
-        self._generate = generate_responses or {}
-        self._structured = structured_responses or {}
-        self._fail_on = fail_on or set()
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    async def generate(self, prompt: str) -> str:
-        if prompt in self._fail_on:
-            raise RuntimeError(f"Mock generate failure: {prompt}")
-        if prompt not in self._generate:
-            raise RuntimeError(f"No mock response for prompt: {prompt!r}")
-        return self._generate[prompt]
-
-    async def generate_structured(
-        self,
-        prompt: str,
-        _schema: dict[str, object],
-    ) -> StructuredResponse:
-        if prompt in self._fail_on:
-            raise RuntimeError(f"Mock structured failure: {prompt}")
-        if prompt not in self._structured:
-            raise RuntimeError(f"No mock structured response for prompt: {prompt!r}")
-        data = self._structured[prompt]
-        return StructuredResponse(data=data, raw=str(data))
-
-
-@pytest.fixture
-def make_client() -> Callable[..., MockLLMClient]:
-    """Return a factory for MockLLMClients."""
-
-    def _factory(
-        name: str = "mock",
-        *,
-        generate_responses: dict[str, str] | None = None,
-        structured_responses: dict[str, dict[str, object]] | None = None,
-        fail_on: set[str] | None = None,
-    ) -> MockLLMClient:
-        return MockLLMClient(
-            name=name,
-            generate_responses=generate_responses,
-            structured_responses=structured_responses,
-            fail_on=fail_on,
-        )
-
-    return _factory
 
 
 class TestGenerateAll:

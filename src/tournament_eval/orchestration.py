@@ -3,7 +3,7 @@
 Typical usage::
 
     from tournament_eval.models import GenerationTask
-    from tournament_eval.llm import OpenAILLMClient, AnthropicLLMClient
+    from tournament_eval.llm import OpenAICompatibleLLMClient, AnthropicLLMClient
     from tournament_eval.orchestration import (
         build_ranking_tasks,
         generate_all,
@@ -11,7 +11,7 @@ Typical usage::
     )
 
     tasks = [GenerationTask(...), GenerationTask(...)]
-    clients = [OpenAILLMClient(...), AnthropicLLMClient(...)]
+    clients = [OpenAICompatibleLLMClient(...), AnthropicLLMClient(...)]
 
     generation_results = await generate_all(tasks, clients)
 
