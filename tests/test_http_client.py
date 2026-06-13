@@ -12,7 +12,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from tournament_eval.llm import AnthropicLLMClient, AnthropicModelConfig
+from tournament_eval.llm import LLMClient, ModelConfig, StructuredResponse
 
 _MakeClient = Callable[..., object]
 _MakeHandler = Callable[..., tuple[object, dict[str, object]]]
@@ -190,11 +190,27 @@ class TestGenerateStructured:
                 await client.generate_structured("rank", {})
 
 
+class _BareLLMClient(LLMClient):
+    """A minimal non-HTTP :class:`LLMClient` for exercising base-class behaviour.
+
+    Every shipped provider subclasses :class:`HTTPLLMClient`, which overrides
+    ``_http_timeout`` with its config's value — so the base default lives here.
+    """
+
+    async def generate(self, prompt: str) -> str:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def generate_structured(
+        self, prompt: str, schema: dict[str, object]
+    ) -> StructuredResponse:  # pragma: no cover - unused
+        raise NotImplementedError
+
+
 class TestBaseDefaultTimeout:
     async def test_non_http_provider_uses_base_default(self) -> None:
-        # AnthropicLLMClient subclasses LLMClient directly (not HTTPLLMClient) and
-        # its config carries no timeout, so it falls back to the base default.
-        client = AnthropicLLMClient(AnthropicModelConfig(model_name="claude"))
+        # A client subclassing LLMClient directly (not HTTPLLMClient) carries no
+        # timeout field, so it falls back to the base default.
+        client = _BareLLMClient(ModelConfig(model_name="bare"))
         async with client:
             assert client._http is not None
             assert client._http_timeout == 300.0

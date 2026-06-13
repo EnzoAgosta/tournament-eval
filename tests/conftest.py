@@ -22,6 +22,8 @@ import httpx
 import pytest
 
 from tournament_eval.llm import (
+    AnthropicLLMClient,
+    AnthropicModelConfig,
     HTTPLLMClient,
     HTTPModelConfig,
     LLMClient,
@@ -174,6 +176,17 @@ def make_ollama_client() -> Callable[..., OllamaLLMClient]:
     def _factory(**config_kwargs: object) -> OllamaLLMClient:
         config_kwargs.setdefault("model_name", "llama3")
         return OllamaLLMClient(OllamaModelConfig(**config_kwargs))  # type: ignore[arg-type]
+
+    return _factory
+
+
+@pytest.fixture
+def make_anthropic_client() -> Callable[..., AnthropicLLMClient]:
+    """Return a factory that builds :class:`AnthropicLLMClient` instances."""
+
+    def _factory(**config_kwargs: object) -> AnthropicLLMClient:
+        config_kwargs.setdefault("model_name", "claude-opus-4-8")
+        return AnthropicLLMClient(AnthropicModelConfig(**config_kwargs))  # type: ignore[arg-type]
 
     return _factory
 
