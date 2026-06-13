@@ -156,7 +156,33 @@ The pipeline is three pure-ish async functions, each a clean stage:
 
 Every stage fans its work out concurrently with `asyncio.gather`. Failures aren't thrown — each stage returns a `(results, failures)` pair of lists, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing `task_id`/`ranking_task_id`, the `author`, and the error type and message. One model timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
 
-Judge responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best-guess.
+Ranking responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best-guess.
+
+## Customizing the ranking
+
+How a ranking model is prompted, constrained, and validated lives in a `RankingTemplate` — a single object owning the three pieces that must agree with each other:
+
+- `render(ranking_task, candidates)` — the full prompt the ranking model sees
+- `schema` — the JSON schema its response is constrained to
+- `parse(data, valid_aliases)` — validation into a `ParsedRanking`
+
+`rank_all`/`rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common case — showing the ranking model the *original* prompt the models answered — is a one-method override, and the context is derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, and `.metadata` are all in reach):
+
+```python
+from collections.abc import Mapping
+from tournament_eval import DefaultRankingTemplate, GenerationResult, RankingTask
+
+class SourceAwareTemplate(DefaultRankingTemplate):
+    def render(self, ranking_task: RankingTask,
+               candidates: Mapping[str, GenerationResult]) -> str:
+        source = next(iter(candidates.values())).generation_prompt
+        return f"The models were asked:\n{source}\n\n" + super().render(ranking_task, candidates)
+
+rankings, failures = await rank_all(ranking_tasks, generations, clients,
+                                    template=SourceAwareTemplate())
+```
+
+Changing the *shape* of the verdict (e.g. allowing ties) means overriding all three methods so the prompt, schema, and parser stay consistent. (`candidates` exposes `.author`; don't render it into the prompt or you defeat the anonymization.)
 
 ## Concurrency
 

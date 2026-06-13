@@ -4,9 +4,8 @@ import uuid
 
 import pytest
 
-from tournament_eval.models import RankingTask
+from tournament_eval.models import DefaultRankingTemplate, RankingTask
 from tournament_eval.orchestration import (
-    _parse_ranking_response,
     build_ranking_tasks,
     generate_all,
     rank_all,
@@ -82,31 +81,31 @@ class TestBuildRankingTasksEdgeCases:
 
 class TestParseRankingResponseEdgeCases:
     def test_single_alias(self) -> None:
-        ranking, reasoning = _parse_ranking_response({"ranking": ["A"]}, {"A"})
-        assert ranking == ["A"]
-        assert reasoning is None
+        parsed = DefaultRankingTemplate().parse({"ranking": ["A"]}, {"A"})
+        assert parsed.ranking == ["A"]
+        assert parsed.reasoning is None
 
     def test_reasoning_is_none_explicitly(self) -> None:
-        ranking, reasoning = _parse_ranking_response(
+        parsed = DefaultRankingTemplate().parse(
             {"ranking": ["A"], "reasoning": None}, {"A"}
         )
-        assert ranking == ["A"]
-        assert reasoning is None
+        assert parsed.ranking == ["A"]
+        assert parsed.reasoning is None
 
     def test_reasoning_is_empty_string(self) -> None:
-        ranking, reasoning = _parse_ranking_response(
+        parsed = DefaultRankingTemplate().parse(
             {"ranking": ["A"], "reasoning": ""}, {"A"}
         )
-        assert ranking == ["A"]
-        assert reasoning == ""
+        assert parsed.ranking == ["A"]
+        assert parsed.reasoning == ""
 
     def test_extra_keys_ignored(self) -> None:
-        ranking, reasoning = _parse_ranking_response(
+        parsed = DefaultRankingTemplate().parse(
             {"ranking": ["A"], "confidence": 0.95}, {"A"}
         )
-        assert ranking == ["A"]
-        assert reasoning is None
+        assert parsed.ranking == ["A"]
+        assert parsed.reasoning is None
 
     def test_empty_ranking_list(self) -> None:
         with pytest.raises(ValueError, match="Missing aliases"):
-            _parse_ranking_response({"ranking": []}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": []}, {"A"})

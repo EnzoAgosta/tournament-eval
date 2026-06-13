@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tournament_eval.models import (
+    DefaultRankingTemplate,
     GenerationFailure,
     GenerationResult,
     GenerationTask,
@@ -16,7 +17,6 @@ from tournament_eval.models import (
     RankingTask,
 )
 from tournament_eval.orchestration import (
-    _build_judge_prompt,
     build_ranking_tasks,
     generate_all,
     rank_all,
@@ -35,13 +35,13 @@ from tournament_eval.persistence import (
     append_generation_task,
     append_ranking_failure,
     append_ranking_result,
+    append_ranking_task,
     read_generation_failure_file,
     read_generation_result_file,
     read_generation_task_file,
     read_ranking_failure_file,
     read_ranking_result_file,
     read_ranking_task_file,
-    write_ranking_tasks,
 )
 
 if TYPE_CHECKING:
@@ -120,7 +120,7 @@ class TestRoundTrip:
             ranking_prompt="rank",
             generations={"A": uuid.uuid4(), "B": uuid.uuid4()},
         )
-        write_ranking_tasks(tmp_path, [rt])
+        append_ranking_task(tmp_path, rt)
         assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == [rt]
 
     @pytest.mark.parametrize("reasoning", ["because", None])
@@ -151,9 +151,16 @@ class TestWriteReadBehaviour:
         path = tmp_path / GENERATION_RESULT_DIR / "m.jsonl"
         assert read_generation_result_file(path) == [g1, g2]
 
-    def test_write_ranking_tasks_empty(self, tmp_path: Path) -> None:
-        write_ranking_tasks(tmp_path, [])
-        assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == []
+    def test_append_ranking_tasks_accumulate(self, tmp_path: Path) -> None:
+        rt1 = RankingTask(
+            id=uuid.uuid4(), ranking_prompt="r", generations={"A": uuid.uuid4()}
+        )
+        rt2 = RankingTask(
+            id=uuid.uuid4(), ranking_prompt="r", generations={"A": uuid.uuid4()}
+        )
+        append_ranking_task(tmp_path, rt1)
+        append_ranking_task(tmp_path, rt2)
+        assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == [rt1, rt2]
 
     def test_reader_skips_blank_lines(self, tmp_path: Path) -> None:
         result = _result(uuid.uuid4(), "m")
@@ -224,7 +231,8 @@ class TestPipelinePersistence:
         assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == ranking_tasks
 
         lookup = {g.id: g for g in gens}
-        prompt = _build_judge_prompt(ranking_tasks[0], lookup)
+        candidates = {a: lookup[gid] for a, gid in ranking_tasks[0].generations.items()}
+        prompt = DefaultRankingTemplate().render(ranking_tasks[0], candidates)
         aliases = list(ranking_tasks[0].generations.keys())
         judge = make_client(
             "judge", structured_responses={prompt: {"ranking": aliases}}
@@ -242,7 +250,9 @@ class TestPipelinePersistence:
         task = make_task("p1")
         gens = [_result(task.id, "a")]
         ranking_tasks = build_ranking_tasks([task], gens, "rank")
-        prompt = _build_judge_prompt(ranking_tasks[0], {g.id: g for g in gens})
+        lookup = {g.id: g for g in gens}
+        candidates = {a: lookup[gid] for a, gid in ranking_tasks[0].generations.items()}
+        prompt = DefaultRankingTemplate().render(ranking_tasks[0], candidates)
         judge = make_client("judge", structured_responses={}, fail_on={prompt})
 
         _, failures = await rank_all(ranking_tasks, gens, [judge], output=tmp_path)

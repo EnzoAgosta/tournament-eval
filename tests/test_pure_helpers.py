@@ -3,11 +3,10 @@
 import pytest
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
-from tournament_eval.models import LetterGenerator
+from tournament_eval.models import DefaultRankingTemplate, LetterGenerator
 from tournament_eval.orchestration import (
     _build_generation_lookup,
-    _build_judge_prompt,
-    _parse_ranking_response,
+    build_ranking_task,
     build_ranking_tasks,
 )
 
@@ -28,47 +27,45 @@ def test_letter_generator_wraps_after_z() -> None:
     assert gen.get_next_letter() == "AB"
 
 
-class TestParseRankingResponse:
+class TestDefaultRankingTemplateParse:
     def test_valid(self) -> None:
-        ranking, reasoning = _parse_ranking_response(
-            {"ranking": ["B", "A"]}, {"A", "B"}
-        )
-        assert ranking == ["B", "A"]
-        assert reasoning is None
+        parsed = DefaultRankingTemplate().parse({"ranking": ["B", "A"]}, {"A", "B"})
+        assert parsed.ranking == ["B", "A"]
+        assert parsed.reasoning is None
 
     def test_with_reasoning(self) -> None:
-        _, reasoning = _parse_ranking_response(
+        parsed = DefaultRankingTemplate().parse(
             {"ranking": ["A"], "reasoning": "great"}, {"A"}
         )
-        assert reasoning == "great"
+        assert parsed.reasoning == "great"
 
     def test_missing_alias(self) -> None:
         with pytest.raises(ValueError, match="Missing aliases"):
-            _parse_ranking_response({"ranking": ["A"]}, {"A", "B"})
+            DefaultRankingTemplate().parse({"ranking": ["A"]}, {"A", "B"})
 
     def test_duplicate_alias(self) -> None:
         with pytest.raises(ValueError, match="Duplicate alias"):
-            _parse_ranking_response({"ranking": ["A", "A"]}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": ["A", "A"]}, {"A"})
 
     def test_unknown_alias(self) -> None:
         with pytest.raises(ValueError, match="Unknown alias"):
-            _parse_ranking_response({"ranking": ["Z"]}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": ["Z"]}, {"A"})
 
     def test_not_a_dict(self) -> None:
         with pytest.raises(ValueError, match="Expected JSON object"):
-            _parse_ranking_response(["A"], {"A"})
+            DefaultRankingTemplate().parse(["A"], {"A"})  # type: ignore[arg-type]
 
     def test_ranking_not_a_list(self) -> None:
         with pytest.raises(ValueError, match='"ranking" must be a list'):
-            _parse_ranking_response({"ranking": "A"}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": "A"}, {"A"})
 
     def test_non_string_entry(self) -> None:
         with pytest.raises(ValueError, match="Ranking entry must be a string"):
-            _parse_ranking_response({"ranking": [42]}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": [42]}, {"A"})
 
     def test_non_string_reasoning(self) -> None:
         with pytest.raises(ValueError, match='"reasoning" must be a string'):
-            _parse_ranking_response({"ranking": ["A"], "reasoning": 42}, {"A"})
+            DefaultRankingTemplate().parse({"ranking": ["A"], "reasoning": 42}, {"A"})
 
 
 def test_lookup_indexes_by_id(make_generation: _MakeGeneration) -> None:
@@ -83,7 +80,7 @@ def test_lookup_empty() -> None:
     assert _build_generation_lookup([]) == {}
 
 
-def test_prompt_includes_rubric_and_candidates(
+def test_default_template_renders_rubric_and_candidates(
     make_generation: _MakeGeneration,
     make_ranking_task: _MakeRankingTask,
 ) -> None:
@@ -93,11 +90,64 @@ def test_prompt_includes_rubric_and_candidates(
         ranking_prompt="Rank by charm.",
         generations={"A": gen_a.id, "B": gen_b.id},
     )
-    prompt = _build_judge_prompt(rt, _build_generation_lookup([gen_a, gen_b]))
+    prompt = DefaultRankingTemplate().render(rt, {"A": gen_a, "B": gen_b})
     assert "Rank by charm." in prompt
     assert "A. hello" in prompt
     assert "B. world" in prompt
     assert '"ranking"' in prompt
+
+
+def test_custom_template_can_inject_generation_prompt(
+    make_generation: _MakeGeneration,
+    make_ranking_task: _MakeRankingTask,
+) -> None:
+    # The headline use case: a custom render that shows the judge what the models
+    # were originally asked, derived from the candidates' GenerationResults.
+    from collections.abc import Mapping
+
+    from tournament_eval.models import GenerationResult, RankingTask
+
+    class SourceAwareTemplate(DefaultRankingTemplate):
+        def render(
+            self,
+            ranking_task: RankingTask,
+            candidates: Mapping[str, GenerationResult],
+        ) -> str:
+            source = next(iter(candidates.values())).generation_prompt
+            base = super().render(ranking_task, candidates)
+            return f"The models were asked:\n{source}\n\n{base}"
+
+    gen_a = make_generation(output="bonjour")
+    gen_b = make_generation(output="salut")
+    rt = make_ranking_task(generations={"A": gen_a.id, "B": gen_b.id})
+    prompt = SourceAwareTemplate().render(rt, {"A": gen_a, "B": gen_b})
+    assert prompt.startswith("The models were asked:\ntest prompt")
+    assert "A. bonjour" in prompt
+
+
+class TestBuildRankingTask:
+    def test_assigns_an_alias_per_result(
+        self, make_generation: _MakeGeneration
+    ) -> None:
+        results = [make_generation(), make_generation(), make_generation()]
+        rt = build_ranking_task(results, "Rank.")
+        assert list(rt.generations.keys()) == ["A", "B", "C"]
+        assert set(rt.generations.values()) == {r.id for r in results}
+        assert rt.ranking_prompt == "Rank."
+
+    def test_seed_makes_the_shuffle_deterministic(
+        self, make_generation: _MakeGeneration
+    ) -> None:
+        results = [make_generation() for _ in range(5)]
+        a = build_ranking_task(results, "Rank.", random_seed=7)
+        b = build_ranking_task(results, "Rank.", random_seed=7)
+        assert list(a.generations.values()) == list(b.generations.values())
+
+    def test_does_not_mutate_input(self, make_generation: _MakeGeneration) -> None:
+        results = [make_generation(), make_generation()]
+        before = list(results)
+        build_ranking_task(results, "Rank.", random_seed=1)
+        assert results == before  # shuffled a copy, not the caller's list
 
 
 class TestBuildRankingTasks:

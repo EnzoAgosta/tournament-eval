@@ -1,7 +1,7 @@
 """Circular Tournament Evaluation Framework.
 
 A framework for evaluating language models via circular ranking:
-every model generates outputs, then every model judges all outputs.
+every model generates outputs, then every model ranks all outputs.
 """
 
 from .llm import (
@@ -20,18 +20,21 @@ from .llm import (
     StructuredResponse,
 )
 from .models import (
+    DefaultRankingTemplate,
     GenerationFailure,
     GenerationFailureDict,
     GenerationResult,
     GenerationResultDict,
     GenerationTask,
     GenerationTaskDict,
+    ParsedRanking,
     RankingFailure,
     RankingFailureDict,
     RankingResult,
     RankingResultDict,
     RankingTask,
     RankingTaskDict,
+    RankingTemplate,
 )
 from .persistence import (
     append_generation_failure,
@@ -39,13 +42,13 @@ from .persistence import (
     append_generation_task,
     append_ranking_failure,
     append_ranking_result,
+    append_ranking_task,
     read_generation_failure_file,
     read_generation_result_file,
     read_generation_task_file,
     read_ranking_failure_file,
     read_ranking_result_file,
     read_ranking_task_file,
-    write_ranking_tasks,
 )
 
 __all__ = [
@@ -53,6 +56,7 @@ __all__ = [
     "AnthropicModelConfig",
     "BedrockLLMClient",
     "BedrockModelConfig",
+    "DefaultRankingTemplate",
     "GenerationFailure",
     "GenerationFailureDict",
     "GenerationResult",
@@ -67,23 +71,25 @@ __all__ = [
     "OllamaModelConfig",
     "OpenAICompatibleLLMClient",
     "OpenAICompatibleModelConfig",
+    "ParsedRanking",
     "RankingFailure",
     "RankingFailureDict",
     "RankingResult",
     "RankingResultDict",
     "RankingTask",
     "RankingTaskDict",
+    "RankingTemplate",
     "StructuredResponse",
     "append_generation_failure",
     "append_generation_result",
     "append_generation_task",
     "append_ranking_failure",
     "append_ranking_result",
+    "append_ranking_task",
     "read_generation_failure_file",
     "read_generation_result_file",
     "read_generation_task_file",
     "read_ranking_failure_file",
     "read_ranking_result_file",
     "read_ranking_task_file",
-    "write_ranking_tasks",
 ]

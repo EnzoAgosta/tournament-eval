@@ -1,17 +1,16 @@
 """Integration tests for the orchestration layer using a mock LLM client."""
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from tests.conftest import MockLLMClient
 from tournament_eval.models import (
+    DefaultRankingTemplate,
     GenerationResult,
     GenerationTask,
     RankingTask,
 )
 from tournament_eval.orchestration import (
-    _build_generation_lookup,
-    _build_judge_prompt,
     generate_all,
     rank_all,
 )
@@ -77,6 +76,44 @@ class TestGenerateAll:
 
 
 class TestRankAll:
+    async def test_uses_a_custom_template(
+        self,
+        make_client: Callable[..., MockLLMClient],
+    ) -> None:
+        # A custom template flows through rank_all → rank_one → render, and the
+        # judge is prompted with its output.
+        gen1 = GenerationResult(
+            id=uuid.uuid4(),
+            task_id=uuid.uuid4(),
+            generation_prompt="translate this",
+            raw_response="r1",
+            output="hello",
+            author="a",
+        )
+        ranking_task = RankingTask(
+            id=uuid.uuid4(), ranking_prompt="Rank.", generations={"A": gen1.id}
+        )
+
+        class SourceAwareTemplate(DefaultRankingTemplate):
+            def render(
+                self,
+                ranking_task: RankingTask,
+                candidates: Mapping[str, GenerationResult],
+            ) -> str:
+                src = next(iter(candidates.values())).generation_prompt
+                return f"SOURCE={src}\n" + super().render(ranking_task, candidates)
+
+        template = SourceAwareTemplate()
+        prompt = template.render(ranking_task, {"A": gen1})
+        assert prompt.startswith("SOURCE=translate this")
+
+        judge = make_client("judge", structured_responses={prompt: {"ranking": ["A"]}})
+        results, failures = await rank_all(
+            [ranking_task], [gen1], [judge], template=template
+        )
+        assert not failures
+        assert results[0].ranking_prompt == prompt  # the custom prompt was used
+
     async def test_ranks_for_all_tasks_and_clients(
         self,
         make_client: Callable[..., MockLLMClient],
@@ -104,9 +141,9 @@ class TestRankAll:
             generations={"A": gen1.id, "B": gen2.id},
         )
 
-        prompt = _build_judge_prompt(
+        prompt = DefaultRankingTemplate().render(
             ranking_task,
-            _build_generation_lookup([gen1, gen2]),
+            {"A": gen1, "B": gen2},
         )
 
         clients = [
@@ -160,9 +197,9 @@ class TestRankAll:
             generations={"A": gen1.id},
         )
 
-        prompt = _build_judge_prompt(
+        prompt = DefaultRankingTemplate().render(
             ranking_task,
-            _build_generation_lookup([gen1]),
+            {"A": gen1},
         )
 
         client = make_client(
@@ -201,9 +238,9 @@ class TestRankAll:
             generations={"A": gen1.id},
         )
 
-        prompt = _build_judge_prompt(
+        prompt = DefaultRankingTemplate().render(
             ranking_task,
-            _build_generation_lookup([gen1]),
+            {"A": gen1},
         )
 
         client = make_client(

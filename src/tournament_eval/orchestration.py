@@ -40,6 +40,7 @@ from pathlib import Path
 from tournament_eval import persistence
 from tournament_eval.llm import LLMClient
 from tournament_eval.models import (
+    DefaultRankingTemplate,
     GenerationFailure,
     GenerationResult,
     GenerationTask,
@@ -47,7 +48,10 @@ from tournament_eval.models import (
     RankingFailure,
     RankingResult,
     RankingTask,
+    RankingTemplate,
 )
+
+_DEFAULT_TEMPLATE: RankingTemplate = DefaultRankingTemplate()
 
 
 def _build_generation_lookup(
@@ -55,117 +59,6 @@ def _build_generation_lookup(
 ) -> dict[uuid.UUID, GenerationResult]:
     """Index GenerationResults by their ID for O(1) lookup."""
     return {result.id: result for result in generation_results}
-
-
-def _build_judge_prompt(
-    ranking_task: RankingTask,
-    generation_lookup: dict[uuid.UUID, GenerationResult],
-) -> str:
-    """Assemble the full prompt sent to a judge model.
-
-    Combines the ranking_prompt, the anonymised candidate outputs, and a JSON
-    schema reminder.
-    """
-    lines: list[str] = [ranking_task.ranking_prompt, "", "Candidates:"]
-    for alias, gen_id in ranking_task.generations.items():
-        output = generation_lookup[gen_id].output
-        lines.append(f"{alias}. {output}")
-
-    lines.extend(
-        [
-            "",
-            "Respond ONLY with a JSON object in this exact format:",
-            '{"ranking": ["A", "B", "C"], "reasoning": "..."}',
-            "",
-            'The "ranking" field must list every candidate alias exactly once,',
-            'from best to worst. The "reasoning" field is optional.',
-            (
-                "NO TIES ARE ALLOWED. If two outputs appear equal, "
-                "break the tie as you see fit."
-            ),
-            'and explain why using the "reasoning" field.',
-        ]
-    )
-    return "\n".join(lines)
-
-
-_DEFAULT_RANKING_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "ranking": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Aliases in ranked order, best first.",
-        },
-        "reasoning": {
-            "type": "string",
-            "description": (
-                "Optional step-by-step analysis and explanation "
-                "behind overall ranking and tie breakers."
-            ),
-        },
-    },
-    "required": ["ranking"],
-    "additionalProperties": False,
-}
-
-
-def _parse_ranking_response(
-    data: dict[str, object],
-    valid_aliases: set[str],
-) -> tuple[list[str], str | None]:
-    """Validate and extract ranking + reasoning from a structured response.
-
-    Parameters
-    ----------
-    data : dict
-        The parsed JSON returned by the model.
-    valid_aliases : set[str]
-        The aliases that must appear exactly once in the ranking.
-
-    Returns
-    -------
-    tuple[list[str], str | None]
-        The validated alias ranking and optional reasoning text.
-
-    Raises
-    ------
-    ValueError
-        If the response is malformed, contains unknown aliases, duplicates,
-        or misses required aliases.
-    """
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
-
-    ranking_raw = data.get("ranking")
-    if not isinstance(ranking_raw, list):
-        raise ValueError(f'"ranking" must be a list, got {type(ranking_raw).__name__}')
-
-    ranking: list[str] = []
-    seen: set[str] = set()
-    for alias in ranking_raw:
-        if not isinstance(alias, str):
-            raise ValueError(
-                f"Ranking entry must be a string, got {type(alias).__name__}"
-            )
-        if alias not in valid_aliases:
-            raise ValueError(f"Unknown alias in ranking: {alias!r}")
-        if alias in seen:
-            raise ValueError(f"Duplicate alias in ranking: {alias!r}")
-        seen.add(alias)
-        ranking.append(alias)
-
-    missing = valid_aliases - seen
-    if missing:
-        raise ValueError(f"Missing aliases in ranking: {sorted(missing)}")
-
-    reasoning = data.get("reasoning")
-    if reasoning is not None and not isinstance(reasoning, str):
-        raise ValueError(
-            f'"reasoning" must be a string, got {type(reasoning).__name__}'
-        )
-
-    return ranking, reasoning
 
 
 async def generate_one(
@@ -275,6 +168,53 @@ async def generate_all(
     return generation_results, generation_failures
 
 
+def build_ranking_task(
+    results: list[GenerationResult],
+    ranking_prompt: str,
+    *,
+    output: str | Path | None = None,
+    random_seed: int | None = None,
+) -> RankingTask:
+    """Build one RankingTask from a single task's GenerationResults.
+
+    The ``results`` are shuffled before aliases (A, B, C...) are assigned, so a
+    model's position bias (e.g. always picking "A") doesn't track authorship.
+
+    Parameters
+    ----------
+    results : list[GenerationResult]
+        The outputs for one GenerationTask.  Must be non-empty.
+    ranking_prompt : str
+        The ranking instructions to embed in the RankingTask.
+    output : str | Path | None
+        If a directory, the task is appended to the run's ranking-tasks file as
+        soon as it is built (mirrors ``generate_one``).
+    random_seed : int | None
+        Seed for the alias shuffle; ``None`` for nondeterministic.
+
+    Returns
+    -------
+    RankingTask
+        Maps aliases to the GenerationResult IDs, in shuffled order.
+    """
+    shuffled = list(results)
+    rng = random.Random(random_seed)
+    rng.shuffle(shuffled)
+
+    letter_gen = LetterGenerator()
+    alias_map: dict[str, uuid.UUID] = {
+        letter_gen.get_next_letter(): result.id for result in shuffled
+    }
+    ranking_task = RankingTask(
+        id=uuid.uuid4(),
+        ranking_prompt=ranking_prompt,
+        generations=alias_map,
+    )
+    if output is not None:
+        persistence.append_ranking_task(output, ranking_task)
+    return ranking_task
+
+
 def build_ranking_tasks(
     tasks: list[GenerationTask],
     generation_results: list[GenerationResult],
@@ -285,6 +225,9 @@ def build_ranking_tasks(
 ) -> list[RankingTask]:
     """Group GenerationResults by task and create RankingTasks with aliases.
 
+    A thin fan-out over :func:`build_ranking_task` — one RankingTask per task that
+    produced at least one output.
+
     Parameters
     ----------
     tasks : list[GenerationTask]
@@ -292,12 +235,12 @@ def build_ranking_tasks(
     generation_results : list[GenerationResult]
         The outputs produced by ``generate_all``.
     ranking_prompt : str
-        The judging instructions to embed in every RankingTask.
+        The ranking instructions to embed in every RankingTask.
     output : str | Path | None
-        If set, the built ranking tasks are written to this run directory.
-        Because their IDs and alias assignment are random, build them once and
-        reuse the persisted set on resume (``persistence.read_ranking_task_file``)
-        rather than calling this again.
+        If set, each task is appended to this run directory as it is built (via
+        :func:`build_ranking_task`).  Because their IDs and alias assignment are
+        random, build them once and reuse the persisted set on resume
+        (``persistence.read_ranking_task_file``) rather than calling this again.
     random_seed : int | None
         Seed for the per-task alias shuffle; ``None`` for nondeterministic.
 
@@ -311,30 +254,13 @@ def build_ranking_tasks(
     for result in generation_results:
         results_by_task.setdefault(result.task_id, []).append(result)
 
-    ranking_tasks: list[RankingTask] = []
-    for task in tasks:
-        results = results_by_task.get(task.id, [])
-        if not results:
-            continue
-
-        alias_map: dict[str, uuid.UUID] = {}
-        letter_gen = LetterGenerator()
-        # to fight models whi just like to choose A all the time
-        rng = random.Random(random_seed)
-        rng.shuffle(results)
-        for result in results:
-            alias_map[letter_gen.get_next_letter()] = result.id
-
-        ranking_tasks.append(
-            RankingTask(
-                id=uuid.uuid4(),
-                ranking_prompt=ranking_prompt,
-                generations=alias_map,
-            )
+    return [
+        build_ranking_task(
+            results, ranking_prompt, output=output, random_seed=random_seed
         )
-    if output is not None:
-        persistence.write_ranking_tasks(output, ranking_tasks)
-    return ranking_tasks
+        for task in tasks
+        if (results := results_by_task.get(task.id, []))
+    ]
 
 
 async def rank_one(
@@ -342,38 +268,49 @@ async def rank_one(
     client: LLMClient,
     generation_lookup: dict[uuid.UUID, GenerationResult],
     *,
+    template: RankingTemplate | None = None,
     output: str | Path | None = None,
 ) -> RankingResult | RankingFailure:
-    """Call a single client as judge for a single RankingTask.
+    """Call a single client as a ranking model for a single RankingTask.
 
-    Returns a :class:`RankingResult`, or a :class:`RankingFailure` if the judge
+    Returns a :class:`RankingResult`, or a :class:`RankingFailure` if the ranking model
     raised or returned a malformed ranking.
+
+    The ``template`` (a :class:`RankingTemplate`, default
+    :class:`DefaultRankingTemplate`) owns the prompt, the response schema, and the
+    validation — subclass it to
+    inject context or change the ranking contract.
 
     Like :func:`generate_one`, concurrency is bounded by the client itself, so a
     custom loop over :func:`rank_one` is throttled the same as :func:`rank_all`.
     If ``output`` is a directory, the result or failure is appended to that
-    run's JSONL files as soon as it is produced.  Only the judging call is
+    run's JSONL files as soon as it is produced.  Only the ranking call is
     guarded, so a persistence error propagates rather than masquerading as a
     failure.
     """
-    prompt = _build_judge_prompt(ranking_task, generation_lookup)
+    template = template or _DEFAULT_TEMPLATE
+    candidates = {
+        alias: generation_lookup[gen_id]
+        for alias, gen_id in ranking_task.generations.items()
+    }
+    prompt = template.render(ranking_task, candidates)
     result: RankingResult | RankingFailure
 
     try:
-        structured = await client.generate_structured(prompt, _DEFAULT_RANKING_SCHEMA)
-        raw_ranking, reasoning = _parse_ranking_response(
+        structured = await client.generate_structured(prompt, template.schema)
+        parsed = template.parse(
             structured.data,
             set(ranking_task.generations.keys()),
         )
-        uuid_ranking = [ranking_task.generations[alias] for alias in raw_ranking]
+        uuid_ranking = [ranking_task.generations[alias] for alias in parsed.ranking]
         result = RankingResult(
             id=uuid.uuid4(),
             ranking_task_id=ranking_task.id,
             ranking_prompt=prompt,
             author=client.name,
-            raw_model_ranking=raw_ranking,
+            raw_model_ranking=parsed.ranking,
             ranking=uuid_ranking,
-            reasoning=reasoning,
+            reasoning=parsed.reasoning,
             raw_response=structured.raw,
         )
     except Exception as exc:
@@ -397,14 +334,16 @@ async def rank_all(
     generation_results: list[GenerationResult],
     clients: Sequence[LLMClient],
     *,
+    template: RankingTemplate | None = None,
     output: str | Path | None = None,
     skip: Collection[tuple[uuid.UUID, str]] = (),
 ) -> tuple[list[RankingResult], list[RankingFailure]]:
-    """Run every client as a judge against every RankingTask.
+    """Run every client as a ranking model against every RankingTask.
 
-    For each RankingTask, the full judge prompt is built from the
-    ``ranking_prompt`` and the actual candidate output texts.  Each client
-    receives the assembled prompt and returns a structured ranking.
+    For each RankingTask, the full ranking model prompt is built by ``template`` (a
+    :class:`RankingTemplate`, default :class:`DefaultRankingTemplate`) from the
+    ``ranking_prompt`` and the candidates.  Each client receives the assembled
+    prompt and returns a structured ranking.
 
     Parameters
     ----------
@@ -414,10 +353,13 @@ async def rank_all(
         The outputs to be ranked (looked up by the aliases in each
         RankingTask).
     clients : list[LLMClient]
-        The models that will act as judges.
+        The models that will act as ranking models.
+    template : RankingTemplate | None
+        The ranking contract (prompt, schema, validation).  ``None`` uses
+        :class:`DefaultRankingTemplate` — a strict total order with no ties.
     output : str | Path | None
         If set, a run directory: each result or failure is streamed to its
-        per-judge JSONL file as it lands.  The ranking *tasks* are persisted
+        each ranking model's JSONL file as it lands.  The ranking *tasks* are persisted
         when built (``build_ranking_tasks(..., output=...)``), not here — on
         resume pass those persisted tasks (``persistence.read_ranking_task_file``),
         since they carry random IDs and a shuffled alias map that must not be
@@ -434,7 +376,7 @@ async def rank_all(
     tuple[list[RankingResult], list[RankingFailure]]
         The results and failures for the pairs run *this call*.  One
         :class:`RankingResult` per successful (ranking_task, client) pair, and
-        one :class:`RankingFailure` per pair whose judge raised or returned a
+        one :class:`RankingFailure` per pair whose ranking model raised or returned a
         malformed ranking.  When ``output`` is set, the same records are also
         streamed to the run directory.
     """
@@ -442,7 +384,9 @@ async def rank_all(
 
     skip_set = set(skip)
     coros = [
-        rank_one(ranking_task, client, generation_lookup, output=output)
+        rank_one(
+            ranking_task, client, generation_lookup, template=template, output=output
+        )
         for ranking_task in ranking_tasks
         for client in clients
         if (ranking_task.id, client.name) not in skip_set

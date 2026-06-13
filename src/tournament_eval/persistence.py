@@ -7,8 +7,8 @@ per-model streams) by model::
       generation_tasks.jsonl              # shared inputs, appended by the caller
       generations/<model>.jsonl           # appended as each result lands
       generation_failures/<model>.jsonl
-      ranking_tasks.jsonl                 # shared inputs, written once
-      rankings/<model>.jsonl              # per judge
+      ranking_tasks.jsonl                 # shared inputs, appended as built
+      rankings/<model>.jsonl              # per ranking model
       ranking_failures/<model>.jsonl
 
 Each line is one entity. orjson encodes :class:`uuid.UUID` and dataclasses
@@ -26,7 +26,6 @@ into a threaded or async one, or concurrent appends could interleave.
 """
 
 import re
-from collections.abc import Iterable
 from pathlib import Path
 
 import orjson
@@ -111,20 +110,23 @@ def append_generation_failure(
     _append_line(path, failure)
 
 
-def write_ranking_tasks(
-    output_dir: str | Path, ranking_tasks: Iterable[RankingTask]
-) -> None:
-    """Save RankingTasks to a run directory."""
+def append_ranking_task(output_dir: str | Path, task: RankingTask) -> None:
+    """Append one ranking task to the run's shared ranking-tasks file.
+
+    Ranking tasks carry a random alias assignment, so build them once and reuse
+    the persisted set on resume (``read_ranking_task_file``) rather than
+    rebuilding — a rebuild would re-shuffle and orphan everything already ranked.
+    (Re-running a build against the same directory appends again.)
+    """
     output_dir = Path(output_dir)
     path = output_dir / RANKING_TASK_FILE
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
-        f.write(b"\n".join(orjson.dumps(task) for task in ranking_tasks))
+    _append_line(path, task)
 
 
 def append_ranking_result(output_dir: str | Path, result: RankingResult) -> None:
-    """Append one ranking result to its judge's stream."""
+    """Append one ranking result to its ranking model's stream."""
     output_dir = Path(output_dir)
     path = output_dir / RANKING_RESULT_DIR / f"{_sanitize_author(result.author)}.jsonl"
     if not path.exists():
@@ -133,7 +135,7 @@ def append_ranking_result(output_dir: str | Path, result: RankingResult) -> None
 
 
 def append_ranking_failure(output_dir: str | Path, failure: RankingFailure) -> None:
-    """Append one ranking failure to its judge's stream."""
+    """Append one ranking failure to its ranking model's stream."""
     output_dir = Path(output_dir)
     path = (
         output_dir / RANKING_FAILURE_DIR / f"{_sanitize_author(failure.author)}.jsonl"
