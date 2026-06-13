@@ -26,7 +26,9 @@ into a threaded or async one, or concurrent appends could interleave.
 """
 
 import re
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import orjson
 
@@ -70,6 +72,34 @@ def _append_line(path: Path, entity: object) -> None:
         f.write(b"\n")
 
 
+def _append_shared(output_dir: str | Path, filename: str, entity: object) -> None:
+    """Append ``entity`` to a run-level shared file (e.g. the tasks streams)."""
+    path = Path(output_dir) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _append_line(path, entity)
+
+
+def _append_sharded(
+    output_dir: str | Path, subdir: str, author: str, entity: object
+) -> None:
+    """Append ``entity`` to its author's shard under ``subdir``."""
+    path = Path(output_dir) / subdir / f"{_sanitize_author(author)}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _append_line(path, entity)
+
+
+def _read_file[T](path: str | Path, from_json: Callable[[Any], T]) -> list[T]:
+    """Read one JSONL file, rebuilding each line via ``from_json``.
+
+    A missing file reads as empty; blank lines are skipped.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    with path.open("rb") as f:
+        return [from_json(orjson.loads(line)) for line in f if line.strip()]
+
+
 def append_generation_task(output_dir: str | Path, task: GenerationTask) -> None:
     """Append one generation task to the run's shared generation-tasks file.
 
@@ -77,37 +107,19 @@ def append_generation_task(output_dir: str | Path, task: GenerationTask) -> None
     each one here.  (Re-running this against the same directory appends again —
     persist a given task set once.)
     """
-    output_dir = Path(output_dir)
-    path = output_dir / GENERATION_TASK_FILE
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, task)
+    _append_shared(output_dir, GENERATION_TASK_FILE, task)
 
 
 def append_generation_result(output_dir: str | Path, result: GenerationResult) -> None:
     """Append one generation result to its model's stream."""
-    output_dir = Path(output_dir)
-    path = (
-        output_dir / GENERATION_RESULT_DIR / f"{_sanitize_author(result.author)}.jsonl"
-    )
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, result)
+    _append_sharded(output_dir, GENERATION_RESULT_DIR, result.author, result)
 
 
 def append_generation_failure(
     output_dir: str | Path, failure: GenerationFailure
 ) -> None:
     """Append one generation failure to its model's stream."""
-    output_dir = Path(output_dir)
-    path = (
-        output_dir
-        / GENERATION_FAILURE_DIR
-        / f"{_sanitize_author(failure.author)}.jsonl"
-    )
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, failure)
+    _append_sharded(output_dir, GENERATION_FAILURE_DIR, failure.author, failure)
 
 
 def append_ranking_task(output_dir: str | Path, task: RankingTask) -> None:
@@ -118,88 +130,44 @@ def append_ranking_task(output_dir: str | Path, task: RankingTask) -> None:
     rebuilding — a rebuild would re-shuffle and orphan everything already ranked.
     (Re-running a build against the same directory appends again.)
     """
-    output_dir = Path(output_dir)
-    path = output_dir / RANKING_TASK_FILE
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, task)
+    _append_shared(output_dir, RANKING_TASK_FILE, task)
 
 
 def append_ranking_result(output_dir: str | Path, result: RankingResult) -> None:
     """Append one ranking result to its ranking model's stream."""
-    output_dir = Path(output_dir)
-    path = output_dir / RANKING_RESULT_DIR / f"{_sanitize_author(result.author)}.jsonl"
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, result)
+    _append_sharded(output_dir, RANKING_RESULT_DIR, result.author, result)
 
 
 def append_ranking_failure(output_dir: str | Path, failure: RankingFailure) -> None:
     """Append one ranking failure to its ranking model's stream."""
-    output_dir = Path(output_dir)
-    path = (
-        output_dir / RANKING_FAILURE_DIR / f"{_sanitize_author(failure.author)}.jsonl"
-    )
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _append_line(path, failure)
+    _append_sharded(output_dir, RANKING_FAILURE_DIR, failure.author, failure)
 
 
 def read_ranking_task_file(path: str | Path) -> list[RankingTask]:
     """Read ranking tasks from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [RankingTask.from_json(task) for task in d]
+    return _read_file(path, RankingTask.from_json)
 
 
 def read_ranking_result_file(path: str | Path) -> list[RankingResult]:
     """Read ranking results from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [RankingResult.from_json(result) for result in d]
+    return _read_file(path, RankingResult.from_json)
 
 
 def read_ranking_failure_file(path: str | Path) -> list[RankingFailure]:
     """Read ranking failures from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [RankingFailure.from_json(failure) for failure in d]
+    return _read_file(path, RankingFailure.from_json)
 
 
 def read_generation_result_file(path: str | Path) -> list[GenerationResult]:
     """Read generation results from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [GenerationResult.from_json(result) for result in d]
+    return _read_file(path, GenerationResult.from_json)
 
 
 def read_generation_failure_file(path: str | Path) -> list[GenerationFailure]:
     """Read generation failures from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [GenerationFailure.from_json(failure) for failure in d]
+    return _read_file(path, GenerationFailure.from_json)
 
 
 def read_generation_task_file(path: str | Path) -> list[GenerationTask]:
     """Read generation tasks from a single file."""
-    path = Path(path)
-    if not path.exists():
-        return []
-    with path.open("rb") as f:
-        d = [orjson.loads(line) for line in f if line.strip()]
-    return [GenerationTask.from_json(task) for task in d]
+    return _read_file(path, GenerationTask.from_json)
