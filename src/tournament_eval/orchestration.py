@@ -40,14 +40,16 @@ from pathlib import Path
 from tournament_eval import persistence
 from tournament_eval.llm import LLMClient, ModelConfig
 from tournament_eval.models import (
-    DefaultRankingTemplate,
     GenerationFailure,
     GenerationResult,
     GenerationTask,
-    LetterGenerator,
     RankingFailure,
     RankingResult,
     RankingTask,
+)
+from tournament_eval.ranking import (
+    DefaultRankingTemplate,
+    LetterGenerator,
     RankingTemplate,
 )
 

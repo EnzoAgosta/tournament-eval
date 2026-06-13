@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tournament_eval.models import (
-    DefaultRankingTemplate,
     GenerationFailure,
     GenerationResult,
     GenerationTask,
@@ -43,6 +42,7 @@ from tournament_eval.persistence import (
     read_ranking_result_file,
     read_ranking_task_file,
 )
+from tournament_eval.ranking import DefaultRankingTemplate
 
 if TYPE_CHECKING:
     from tests.conftest import MockLLMClient

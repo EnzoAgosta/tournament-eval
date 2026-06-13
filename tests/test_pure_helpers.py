@@ -3,12 +3,12 @@
 import pytest
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
-from tournament_eval.models import DefaultRankingTemplate, LetterGenerator
 from tournament_eval.orchestration import (
     _build_generation_lookup,
     build_ranking_task,
     build_ranking_tasks,
 )
+from tournament_eval.ranking import DefaultRankingTemplate, LetterGenerator
 
 
 def test_letter_generator_sequence() -> None:

@@ -5,7 +5,6 @@ from collections.abc import Callable, Mapping
 
 from tests.conftest import MockLLMClient
 from tournament_eval.models import (
-    DefaultRankingTemplate,
     GenerationResult,
     GenerationTask,
     RankingTask,
@@ -14,6 +13,7 @@ from tournament_eval.orchestration import (
     generate_all,
     rank_all,
 )
+from tournament_eval.ranking import DefaultRankingTemplate
 
 
 class TestGenerateAll:

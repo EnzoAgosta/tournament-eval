@@ -127,9 +127,7 @@ class TestBuildPayload:
             "format": {"type": "json_schema", "schema": schema},
         }
 
-    def test_schema_tool_use_fallback(
-        self, make_anthropic_client: _MakeClient
-    ) -> None:
+    def test_schema_tool_use_fallback(self, make_anthropic_client: _MakeClient) -> None:
         schema: dict[str, object] = {"type": "object", "required": ["ranking"]}
         payload = make_anthropic_client(structured_output="tool_use")._build_payload(
             "rank", schema=schema

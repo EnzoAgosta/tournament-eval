@@ -4,12 +4,13 @@ import uuid
 
 import pytest
 
-from tournament_eval.models import DefaultRankingTemplate, RankingTask
+from tournament_eval.models import RankingTask
 from tournament_eval.orchestration import (
     build_ranking_tasks,
     generate_all,
     rank_all,
 )
+from tournament_eval.ranking import DefaultRankingTemplate
 
 
 class TestGenerateAllEdgeCases:
