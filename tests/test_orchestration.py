@@ -40,6 +40,26 @@ class TestGenerateAll:
         for t in tasks:
             assert t.id in by_task
 
+    async def test_accepts_a_single_pass_iterator_of_clients(
+        self,
+        make_client: Callable[..., MockLLMClient],
+        make_task: Callable[[str], GenerationTask],
+    ) -> None:
+        # clients is re-iterated once per task, so a generator must be
+        # materialised internally; otherwise it would be exhausted after the
+        # first task and later tasks would see no clients.
+        tasks = [make_task("p1"), make_task("p2")]
+        clients = (
+            make_client(name, generate_responses={"p1": "r1", "p2": "r2"})
+            for name in ("a", "b")
+        )
+
+        results, failures = await generate_all(tasks, clients)
+
+        assert len(results) == 4  # 2 tasks x 2 clients, not 2
+        assert len(failures) == 0
+        assert {r.author for r in results} == {"a", "b"}
+
     async def test_returns_failures(
         self,
         make_client: Callable[..., MockLLMClient],

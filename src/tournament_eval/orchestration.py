@@ -34,7 +34,7 @@ Typical usage::
 import asyncio
 import random
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable
 from pathlib import Path
 
 from tournament_eval import persistence
@@ -112,7 +112,7 @@ async def generate_one(
 
 async def generate_all(
     tasks: list[GenerationTask],
-    clients: Sequence[LLMClient[ModelConfig]],
+    clients: Iterable[LLMClient[ModelConfig]],
     *,
     output: str | Path | None = None,
     skip: Collection[tuple[uuid.UUID, str]] = (),
@@ -125,8 +125,10 @@ async def generate_all(
     ----------
     tasks : list[GenerationTask]
         The creative tasks to evaluate.
-    clients : list[LLMClient]
-        The models that will generate outputs.
+    clients : Iterable[LLMClient]
+        The models that will generate outputs.  Any iterable (list, tuple, set,
+        generator); it is materialised once, so a single-pass iterator is safe
+        even though every task is paired with every client.
     output : str | Path | None
         If set, a run directory: each result or failure is streamed to its
         per-model JSONL file as it lands.  Persisting the *tasks* is the
@@ -150,6 +152,7 @@ async def generate_all(
         streamed to the run directory.
     """
     skip_set = set(skip)
+    clients = list(clients)  # materialise: clients is re-iterated once per task
     coros = [
         generate_one(task, client, output=output)
         for task in tasks
@@ -332,7 +335,7 @@ async def rank_one(
 async def rank_all(
     ranking_tasks: list[RankingTask],
     generation_results: list[GenerationResult],
-    clients: Sequence[LLMClient[ModelConfig]],
+    clients: Iterable[LLMClient[ModelConfig]],
     *,
     template: RankingTemplate | None = None,
     output: str | Path | None = None,
@@ -352,8 +355,10 @@ async def rank_all(
     generation_results : list[GenerationResult]
         The outputs to be ranked (looked up by the aliases in each
         RankingTask).
-    clients : list[LLMClient]
-        The models that will act as ranking models.
+    clients : Iterable[LLMClient]
+        The models that will act as ranking models.  Any iterable (list, tuple,
+        set, generator); it is materialised once, so a single-pass iterator is
+        safe even though every ranking task is paired with every client.
     template : RankingTemplate | None
         The ranking contract (prompt, schema, validation).  ``None`` uses
         :class:`DefaultRankingTemplate` — a strict total order with no ties.
@@ -383,6 +388,7 @@ async def rank_all(
     generation_lookup = _build_generation_lookup(generation_results)
 
     skip_set = set(skip)
+    clients = list(clients)  # materialise: clients is re-iterated once per task
     coros = [
         rank_one(
             ranking_task, client, generation_lookup, template=template, output=output
