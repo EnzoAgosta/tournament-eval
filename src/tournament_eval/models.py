@@ -1,3 +1,11 @@
+"""The pipeline's data model: the tasks, results, and failures it passes around.
+
+Plain frozen dataclasses with no behaviour beyond ``from_json`` — the inverse of the
+orjson serialization in :mod:`tournament_eval.persistence`.  Each is paired with a
+``*Dict`` TypedDict describing its on-disk JSON shape.  The ranking *strategy* lives
+in :mod:`tournament_eval.ranking`; this module is data only.
+"""
+
 import dataclasses
 import uuid
 from typing import TypedDict
@@ -132,9 +140,7 @@ class RankingTask:
         return cls(
             id=uuid.UUID(data["id"]),
             ranking_prompt=data["ranking_prompt"],
-            generations={
-                alias: uuid.UUID(gid) for alias, gid in data["generations"].items()
-            },
+            generations={alias: uuid.UUID(gid) for alias, gid in data["generations"].items()},
         )
 
 

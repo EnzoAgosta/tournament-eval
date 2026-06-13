@@ -1,44 +1,43 @@
 """Pure-function orchestration for the tournament evaluation flow.
 
-Typical usage::
+Three stages, each fired concurrently and each returning ``(results, failures)`` so
+one failing model never sinks a run:
 
+1. :func:`generate_all` — every client produces an output for every task.
+2. :func:`build_ranking_tasks` — group the outputs per task and assign anonymised
+   aliases (A, B, C...) so authorship is hidden from the rankers.
+3. :func:`rank_all` — every client ranks every task's candidates.
+
+:func:`generate_all` / :func:`rank_all` manage client lifecycles themselves — they
+open any client that owns resources (e.g. the built-in httpx client) for the batch
+and close it afterwards — so the caller just passes clients, no ``async with``::
+
+    from tournament_eval import OpenAICompatibleClient
     from tournament_eval.models import GenerationTask
-    from tournament_eval.llm import OpenAICompatibleLLMClient, AnthropicLLMClient
-    from tournament_eval.orchestration import (
-        build_ranking_tasks,
-        generate_all,
-        rank_all,
-    )
+    from tournament_eval.orchestration import build_ranking_tasks, generate_all, rank_all
 
-    tasks = [GenerationTask(...), GenerationTask(...)]
+    tasks = [GenerationTask(id=..., generation_prompt="Translate ... into French."), ...]
+    clients = [OpenAICompatibleClient(model_id="...", base_url="...", api_key="...")]
 
-    # Clients are async context managers (each owns a connection pool).
-    async with OpenAICompatibleLLMClient(...) as a, OpenAICompatibleLLMClient(...) as b:
-        clients = [a, b]
+    generations, gen_failures = await generate_all(tasks, clients, output="runs/demo")
 
-        generation_results, _failures = await generate_all(tasks, clients)
+    ranking_tasks = build_ranking_tasks(tasks, generations, "Rank by fluency and accuracy.")
+    rankings, rank_failures = await rank_all(ranking_tasks, generations, clients, output="runs/demo")
 
-        ranking_tasks = build_ranking_tasks(
-            tasks=tasks,
-            generation_results=generation_results,
-            ranking_prompt="Rank these translations by fluency and accuracy.",
-        )
-
-        ranking_results, _failures = await rank_all(
-            ranking_tasks=ranking_tasks,
-            generation_results=generation_results,
-            clients=clients,
-        )
+Aggregation — collapsing the per-ranker rankings into a leaderboard (Borda, Elo, ...) —
+is intentionally out of scope; the pipeline hands you validated ranked data to score
+however you like.
 """
 
 import asyncio
+import contextlib
 import random
 import uuid
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
 from tournament_eval import persistence
-from tournament_eval.llm import LLMClient, ModelConfig
+from tournament_eval.llm import LLMClient
 from tournament_eval.models import (
     GenerationFailure,
     GenerationResult,
@@ -63,9 +62,27 @@ def _build_generation_lookup(
     return {result.id: result for result in generation_results}
 
 
+async def _open_clients(clients: list[LLMClient], stack: contextlib.AsyncExitStack) -> list[LLMClient]:
+    """Enter the clients that are async context managers; pass the rest through.
+
+    The built-in :class:`~tournament_eval.llm.OpenAICompatibleClient` owns an httpx
+    pool and must be opened; the SDK-backed clients aren't context managers (they
+    don't own the injected SDK client's lifecycle), so they're used as-is.  This is
+    what lets :func:`generate_all` / :func:`rank_all` manage the batch's lifecycles
+    so the caller doesn't have to wrap clients in their own ``async with``.
+    """
+    opened: list[LLMClient] = []
+    for client in clients:
+        if isinstance(client, contextlib.AbstractAsyncContextManager):
+            opened.append(await stack.enter_async_context(client))
+        else:
+            opened.append(client)
+    return opened
+
+
 async def generate_one(
     task: GenerationTask,
-    client: LLMClient[ModelConfig],
+    client: LLMClient,
     *,
     output: str | Path | None = None,
 ) -> GenerationResult | GenerationFailure:
@@ -79,6 +96,11 @@ async def generate_one(
     ``max_concurrency`` (or a shared semaphore), this call self-throttles.  That
     means a hand-rolled loop over :func:`generate_one` gets the same bounding as
     :func:`generate_all` for free.
+
+    Unlike :func:`generate_all`, this does not manage the client's lifecycle — it
+    assumes a ready-to-use client.  Driving a resource-owning client (the built-in
+    :class:`~tournament_eval.llm.OpenAICompatibleClient`) through :func:`generate_one`
+    directly means opening it yourself (``async with client: ...``).
 
     If ``output`` is a directory, the result or failure is appended to that
     run's JSONL files as soon as it is produced (see
@@ -114,14 +136,17 @@ async def generate_one(
 
 async def generate_all(
     tasks: list[GenerationTask],
-    clients: Iterable[LLMClient[ModelConfig]],
+    clients: Iterable[LLMClient],
     *,
     output: str | Path | None = None,
     skip: Collection[tuple[uuid.UUID, str]] = (),
 ) -> tuple[list[GenerationResult], list[GenerationFailure]]:
     """Run every client against every task to produce GenerationResults.
 
-    All calls are fired concurrently.
+    All calls are fired concurrently.  Clients that are async context managers (the
+    built-in :class:`~tournament_eval.llm.OpenAICompatibleClient`) are opened for the
+    duration of the batch and closed on exit; SDK-backed clients pass through.  So no
+    caller-side ``async with`` is needed — pass clients and go.
 
     Parameters
     ----------
@@ -154,14 +179,18 @@ async def generate_all(
         streamed to the run directory.
     """
     skip_set = set(skip)
-    clients = list(clients)  # materialise: clients is re-iterated once per task
-    coros = [
-        generate_one(task, client, output=output)
-        for task in tasks
-        for client in clients
-        if (task.id, client.name) not in skip_set
-    ]
-    outcomes = await asyncio.gather(*coros)
+    async with contextlib.AsyncExitStack() as stack:
+        # Open any clients that own resources (e.g. the built-in httpx pool) for
+        # the duration of the batch, closing them all on exit; SDK clients pass
+        # through. `clients` is materialised here (re-iterated once per task).
+        live = await _open_clients(list(clients), stack)
+        coros = [
+            generate_one(task, client, output=output)
+            for task in tasks
+            for client in live
+            if (task.id, client.name) not in skip_set
+        ]
+        outcomes = await asyncio.gather(*coros)
 
     generation_results: list[GenerationResult] = []
     generation_failures: list[GenerationFailure] = []
@@ -207,9 +236,7 @@ def build_ranking_task(
     rng.shuffle(shuffled)
 
     letter_gen = LetterGenerator()
-    alias_map: dict[str, uuid.UUID] = {
-        letter_gen.get_next_letter(): result.id for result in shuffled
-    }
+    alias_map: dict[str, uuid.UUID] = {letter_gen.get_next_letter(): result.id for result in shuffled}
     ranking_task = RankingTask(
         id=uuid.uuid4(),
         ranking_prompt=ranking_prompt,
@@ -260,9 +287,7 @@ def build_ranking_tasks(
         results_by_task.setdefault(result.task_id, []).append(result)
 
     return [
-        build_ranking_task(
-            results, ranking_prompt, output=output, random_seed=random_seed
-        )
+        build_ranking_task(results, ranking_prompt, output=output, random_seed=random_seed)
         for task in tasks
         if (results := results_by_task.get(task.id, []))
     ]
@@ -270,7 +295,7 @@ def build_ranking_tasks(
 
 async def rank_one(
     ranking_task: RankingTask,
-    client: LLMClient[ModelConfig],
+    client: LLMClient,
     generation_lookup: dict[uuid.UUID, GenerationResult],
     *,
     template: RankingTemplate | None = None,
@@ -283,21 +308,17 @@ async def rank_one(
 
     The ``template`` (a :class:`RankingTemplate`, default
     :class:`DefaultRankingTemplate`) owns the prompt, the response schema, and the
-    validation — subclass it to
-    inject context or change the ranking contract.
+    validation — subclass it to inject context or change the ranking contract.
 
-    Like :func:`generate_one`, concurrency is bounded by the client itself, so a
-    custom loop over :func:`rank_one` is throttled the same as :func:`rank_all`.
+    As with :func:`generate_one`, concurrency is bounded by the client itself and the
+    client's lifecycle is the caller's (:func:`rank_all` manages it for a batch).
     If ``output`` is a directory, the result or failure is appended to that
     run's JSONL files as soon as it is produced.  Only the ranking call is
     guarded, so a persistence error propagates rather than masquerading as a
     failure.
     """
     template = template or _DEFAULT_TEMPLATE
-    candidates = {
-        alias: generation_lookup[gen_id]
-        for alias, gen_id in ranking_task.generations.items()
-    }
+    candidates = {alias: generation_lookup[gen_id] for alias, gen_id in ranking_task.generations.items()}
     prompt = template.render(ranking_task, candidates)
     result: RankingResult | RankingFailure
 
@@ -337,7 +358,7 @@ async def rank_one(
 async def rank_all(
     ranking_tasks: list[RankingTask],
     generation_results: list[GenerationResult],
-    clients: Iterable[LLMClient[ModelConfig]],
+    clients: Iterable[LLMClient],
     *,
     template: RankingTemplate | None = None,
     output: str | Path | None = None,
@@ -348,7 +369,8 @@ async def rank_all(
     For each RankingTask, the full ranking model prompt is built by ``template`` (a
     :class:`RankingTemplate`, default :class:`DefaultRankingTemplate`) from the
     ``ranking_prompt`` and the candidates.  Each client receives the assembled
-    prompt and returns a structured ranking.
+    prompt and returns a structured ranking.  Like :func:`generate_all`, resource-owning
+    clients are opened for the batch and closed on exit (no caller-side ``async with``).
 
     Parameters
     ----------
@@ -366,7 +388,7 @@ async def rank_all(
         :class:`DefaultRankingTemplate` — a strict total order with no ties.
     output : str | Path | None
         If set, a run directory: each result or failure is streamed to its
-        each ranking model's JSONL file as it lands.  The ranking *tasks* are persisted
+        ranking model's JSONL file as it lands.  The ranking *tasks* are persisted
         when built (``build_ranking_tasks(..., output=...)``), not here — on
         resume pass those persisted tasks (``persistence.read_ranking_task_file``),
         since they carry random IDs and a shuffled alias map that must not be
@@ -390,16 +412,23 @@ async def rank_all(
     generation_lookup = _build_generation_lookup(generation_results)
 
     skip_set = set(skip)
-    clients = list(clients)  # materialise: clients is re-iterated once per task
-    coros = [
-        rank_one(
-            ranking_task, client, generation_lookup, template=template, output=output
-        )
-        for ranking_task in ranking_tasks
-        for client in clients
-        if (ranking_task.id, client.name) not in skip_set
-    ]
-    outcomes = await asyncio.gather(*coros)
+    async with contextlib.AsyncExitStack() as stack:
+        # Open resource-owning clients for the batch (see generate_all); SDK
+        # clients pass through. `clients` is materialised here.
+        live = await _open_clients(list(clients), stack)
+        coros = [
+            rank_one(
+                ranking_task,
+                client,
+                generation_lookup,
+                template=template,
+                output=output,
+            )
+            for ranking_task in ranking_tasks
+            for client in live
+            if (ranking_task.id, client.name) not in skip_set
+        ]
+        outcomes = await asyncio.gather(*coros)
 
     ranking_results: list[RankingResult] = []
     ranking_failures: list[RankingFailure] = []

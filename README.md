@@ -2,94 +2,90 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/)
-[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#tested-minimal-extensible)
+[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#tested-and-typed)
 
-Circular tournament evaluation for language models: every model is both a contestant and a judge.
+Circular ranking for language models — and a clean set of primitives for wiring many different LLMs together to do it.
 
 ## Why this exists
 
 I built this while fine-tuning models for translation. Translation is a task with no single correct answer — two fluent translations can both be "right," and a BLEU score won't tell you which one a human would prefer. I wanted a way to rank my fine-tunes that didn't cost a fortune in API calls to a single "grader" model, and that didn't quietly inherit that one grader's blind spots.
 
-So instead of trusting one judge, I let the contestants judge each other. That turned out to be a more interesting idea than I expected, and it grew into this.
+So instead of trusting one judge, I let a panel of models rank each other's work. That turned out to be a more interesting idea than I expected — and getting many different LLMs to actually cooperate cleanly turned out to be most of the work. This is both: the ranking methodology, and the plumbing to run it.
 
 ## The idea
 
 You have a set of models and a set of tasks where quality is subjective — translation, summarization, style transfer, creative writing. There's no gold answer to grade against.
 
-`tournament-eval` runs a circular tournament:
+`tournament-eval` runs the evaluation as two passes over a pool of models:
 
-1. **Every model generates** an output for every task.
-2. **Every model ranks** every model's outputs for each task — including its own, anonymized behind aliases (`A`, `B`, `C`...).
-3. You get a complete graph of rankings, each with the judge's full reasoning preserved.
+1. **Generation** — every contestant produces an output for every task.
+2. **Ranking** — every judge ranks the whole field of outputs for each task, with authorship hidden behind aliases (`A`, `B`, `C`...).
 
-Five models judging five outputs is 25 independent rankings per task. No model's verdict is load-bearing on its own.
+The contestants and the judges are just two lists you pass in. Point them at the **same** pool and you get the circular case — a peer review where the models being ranked are also the ones doing the ranking. Point them at **different** pools and you get a panel of trusted graders scoring a field of candidates. Same pipeline either way.
 
-Judges work independently — there's no debate, no iteration, no consensus step. They never see each other's verdicts. Collapsing the rankings into a single result comes later, and it's yours to define.
+Each judge ranks independently — no debate, no consensus step, they never see each other's verdicts. You get a set of complete, reasoned rankings; collapsing them into a single result comes later, and it's yours to define.
 
 ## Why peer ranking instead of a single judge
 
 **Bias becomes a signal, not a problem to hide.**
-When a model overrates its own output relative to how its peers rate it, that's a measurable fact about its calibration. When it systematically underrates a competitor, that's a visible preference pattern. These biases aren't corrected away — they're recorded, and they become part of your dataset. A single judge gives you its biases with no way to see them. A room full of judges lets you measure them against each other.
+When a model overrates a translation that its peers rate poorly, that's a measurable fact about its calibration. When it systematically underrates a competitor, that's a visible preference pattern. These biases aren't corrected away — they're recorded, and they become part of your dataset. A single judge gives you its biases with no way to see them; a panel lets you measure them against each other.
 
 **No single point of failure.**
-If one model hallucinates, its noise is diluted by the others. If one model is biased, that bias is legible against the consensus rather than silently baked into every score.
+If one model hallucinates, its noise is diluted by the others. If one model is biased, that bias is legible against the panel rather than silently baked into every score.
 
 **Model-agnostic.**
-The framework only cares about ordinal rankings. The contestants can be GPT, Claude, a local Llama, or the checkpoint you fine-tuned an hour ago. They don't need to agree, and they don't need to know anything about each other.
+The framework only cares about ordinal rankings. The models can be GPT, Claude, a local Llama, or the checkpoint you fine-tuned an hour ago. They don't need to agree, and they don't need to know anything about each other.
 
 **Order-invariant aggregation.**
-There's no Elo, no match history, no score that drifts as judgments accumulate. Every ranking is independent. Once you have the set of rankings, aggregating them is order-invariant — Borda count, Condorcet, Bradley–Terry, whatever you choose, the result doesn't depend on the order you feed the rankings in.
+There's no Elo, no match history, no score that drifts as judgments accumulate. Every ranking is independent. Once you have the set of rankings, aggregating them is order-invariant — Borda count, Condorcet, Bradley–Terry, whatever you choose — and the result doesn't depend on the order you feed the rankings in.
 
 > **A note on determinism.** Generation itself is *not* reproducible — models are sampled at a temperature, so two runs can differ. The order-invariance is a property of the aggregation math over a fixed set of rankings, not of the model outputs. If you need reproducible generation, pin temperature/seed at the client level.
 
 **Full reasoning capture.**
-Every judge's deliberation is preserved alongside its ranking, so you can run the tournament once and analyze it many ways afterward:
-
-- Which model values fluency over accuracy?
-- Which model is most self-consistent?
-- Which model's reasoning tracks human preference?
-
-The rankings are the output. The reasoning is the audit trail.
+Every judge's reasoning is preserved alongside its ranking, so you can run the tournament once and analyze it many ways — which model values fluency over accuracy, which is most self-consistent, which one's reasoning tracks human preference. The rankings are the output; the reasoning is the audit trail.
 
 ## Not Elo, not pairwise
 
 If you've ranked models before, you've probably reached for one of two tools. This is neither.
 
-**Elo — and its descendants Glicko, TrueSkill, arena leaderboards — is sequential by construction.** Every match nudges a running score up or down, so a rating depends on match history and the order games were played in. There is no running score here to nudge. Every judgment is independent and stateless, so there is nothing for an Elo update to attach to. You *can't* build an Elo on top of this — and that's deliberate. Feed the rankings in any order and the aggregate is identical.
+**Elo — and its descendants Glicko, TrueSkill, arena leaderboards — is sequential by construction.** Every match nudges a running score, so a rating depends on match history and the order games were played in. There's no running score here to nudge: every judgment is independent and stateless. Feed the rankings in any order and the aggregate is identical — by design.
 
-**Pairwise comparison collapses every decision to "A vs B."** To order N candidates you collect a pile of binary votes and reconstruct a global order from them — which can contradict itself (A beats B beats C beats A). Here, each judge ranks the entire field at once and returns one complete ordinal order, reasoned over all candidates together, rather than stitched back together from fragments.
-
-The design target is the opposite of a two-player match: **many contestants, and as many judges as contestants.** Five models producing five outputs and ranking all five is the natural shape — 25 whole-field rankings per task, not 25 coin flips.
+**Pairwise comparison collapses every decision to "A vs B."** To order N candidates you collect a pile of binary votes and reconstruct a global order, which can contradict itself (A beats B beats C beats A). Here each judge ranks the entire field at once and returns one complete ordinal order, reasoned over all candidates together, rather than stitched back from fragments.
 
 ### Contestants and judges are separate axes
 
-The circular case — every contestant is also a judge — is the interesting default, but it isn't a requirement. `generate_all` and `rank_all` each take their own client list, so the two roles are fully decoupled:
+`generate_all` and `rank_all` each take their own list of clients, so the two roles are fully decoupled:
 
+- **N candidates judged by the same N models** — the full circular tournament.
 - **2 candidates, 15 judges** — a small head-to-head settled by a large, diverse panel.
 - **15 candidates, 2 judges** — a wide field filtered by a couple of trusted graders.
-- **N candidates judged by the same N models** — the full circular tournament.
+- **5 fine-tunes judged by 3 frontier models** — contestants and judges from entirely different tiers.
 
-Same pipeline, same data model. Who generates and who judges are just two lists you pass in.
+Same pipeline, same data model. Who generates and who judges are just two lists.
+
+## Install
+
+```bash
+uv add tournament-eval                     # core — the built-in httpx client, no SDKs
+uv add tournament-eval --extra openai      # + the official OpenAI SDK client
+uv add tournament-eval --extra anthropic   # + the Anthropic SDK client
+uv add tournament-eval --extra ollama      # + the Ollama SDK client
+uv add tournament-eval --extra bedrock     # + Amazon Bedrock (boto3)
+```
+
+The core install talks to anything speaking the OpenAI `/chat/completions` protocol over HTTP — local servers included — with no extra dependencies. Reach for an extra only when you want a specific provider's official SDK.
 
 ## Quickstart
 
-Requires Python 3.14+ and any OpenAI-compatible model server. The quickstart uses a local [Ollama](https://ollama.com) server; see [Status](#status) for the full client story.
-
-```bash
-git clone https://github.com/<you>/tournament-eval.git
-cd tournament-eval
-uv sync
-```
+Requires Python 3.14+. This example ranks two local models served by [Ollama](https://ollama.com) through its OpenAI-compatible endpoint, so it needs no extras.
 
 ```python
 import asyncio
-import contextlib
 import uuid
 
 from tournament_eval import (
     GenerationTask,
-    OllamaLLMClient,
-    OllamaModelConfig,
+    OpenAICompatibleClient,
     build_ranking_tasks,
     generate_all,
     rank_all,
@@ -97,66 +93,91 @@ from tournament_eval import (
 
 
 async def main() -> None:
-    # Each client holds a connection pool and MUST be used as an async context
-    # manager. AsyncExitStack lets us enter a whole list of them cleanly.
-    async with contextlib.AsyncExitStack() as stack:
-        # The contestants — also the judges.
-        clients = [
-            await stack.enter_async_context(
-                OllamaLLMClient(OllamaModelConfig(model_name="llama3.2"))
-            ),
-            await stack.enter_async_context(
-                OllamaLLMClient(OllamaModelConfig(model_name="gemma3"))
-            ),
-        ]
+    # A pool of models. The built-in client speaks the OpenAI /chat/completions
+    # protocol — point base_url at any local server (Ollama here, or mlx_lm, vLLM...).
+    # Local servers ignore the API key, so any non-empty string works.
+    clients = [
+        OpenAICompatibleClient(model_id="llama3.2", base_url="http://localhost:11434/v1", api_key="local"),
+        OpenAICompatibleClient(model_id="gemma3", base_url="http://localhost:11434/v1", api_key="local"),
+    ]
 
-        # The tasks. Subjective by design — no gold answer.
-        tasks = [
-            GenerationTask(
-                id=uuid.uuid4(),
-                generation_prompt="Translate to French: The quick brown fox jumps over the lazy dog.",
-            ),
-        ]
+    tasks = [
+        GenerationTask(
+            id=uuid.uuid4(),
+            generation_prompt="Translate into French: The quick brown fox jumps over the lazy dog.",
+        ),
+    ]
 
-        # 1. Every model generates an output for every task.
-        generations, gen_failures = await generate_all(tasks, clients)
+    # 1. Every model produces an output for every task.
+    generations, gen_failures = await generate_all(tasks, clients)
 
-        # 2. Group outputs per task and assign anonymized aliases (A, B, ...).
-        ranking_tasks = build_ranking_tasks(
-            tasks=tasks,
-            generation_results=generations,
-            ranking_prompt="Rank these French translations by fluency and accuracy, best first.",
-        )
+    # 2. Group outputs per task and hide authorship behind aliases (A, B, ...).
+    ranking_tasks = build_ranking_tasks(
+        tasks, generations, "Rank these French translations by fluency and accuracy, best first."
+    )
 
-        # 3. Every model ranks every output, including its own.
-        rankings, rank_failures = await rank_all(
-            ranking_tasks=ranking_tasks,
-            generation_results=generations,
-            clients=clients,
-        )
+    # 3. Every judge ranks the whole field. Same clients here = the circular case.
+    rankings, rank_failures = await rank_all(ranking_tasks, generations, clients)
 
-        for r in rankings:
-            print(f"{r.author} ranked: {r.raw_model_ranking}")
-            if r.reasoning:
-                print(f"  reasoning: {r.reasoning[:120]}...")
+    for r in rankings:
+        print(f"{r.author} ranked {r.raw_model_ranking}")
+        if r.reasoning:
+            print(f"  reasoning: {r.reasoning[:120]}...")
 
 
 asyncio.run(main())
 ```
 
+No `async with` to manage: `generate_all` / `rank_all` open and close any clients that own resources (like the built-in httpx client) for the duration of the batch.
+
+## The clients
+
+Everything the pipeline needs from a model is one tiny contract — the `LLMClient` **Protocol**: a `name`, and async `generate` / `generate_structured`. Anything that satisfies it works; there's no base class to inherit.
+
+The design principle is **lean on the providers' own SDKs**. Rather than re-implement each provider's auth, endpoints, retries, and wire quirks, the SDK-backed clients wrap a native client *you* construct and own — so you configure the provider its canonical way, and the adapter just maps it onto the contract.
+
+| Client | Install | Wraps | Notes |
+|--------|---------|-------|-------|
+| `OpenAICompatibleClient` | core | — (httpx) | any OpenAI `/chat/completions` server: local (Ollama, mlx_lm, vLLM, llama.cpp) or the OpenAI API |
+| `OpenAIClient` | `[openai]` | `openai.AsyncOpenAI` | the official SDK, via the Responses API |
+| `AnthropicClient` | `[anthropic]` | `anthropic.AsyncAnthropic` | Messages API; native json-schema structured output |
+| `OllamaClient` | `[ollama]` | `ollama.AsyncClient` | structured output via Ollama's grammar-constrained `format` |
+| `AnthropicBedrockClient`, `NovaBedrockClient`, `TitanBedrockClient`, `LlamaBedrockClient`, `MistralBedrockClient`, `CohereBedrockClient`, `JambaBedrockClient`, `PalmyraBedrockClient`, `GptOssBedrockClient` | `[bedrock]` | a boto3 `bedrock-runtime` client | one per model family — **Bedrock = boto**, auth is the AWS credential chain |
+
+The built-in client takes plain keyword config; the SDK-backed ones take an injected client plus the same shared generation knobs:
+
+```python
+import boto3
+from anthropic import AsyncAnthropic
+from tournament_eval import AnthropicClient, AnthropicBedrockClient
+
+# Anthropic's first-party API, via the official SDK (you own auth + config):
+claude = AnthropicClient(AsyncAnthropic(api_key="..."), model_id="claude-sonnet-4-6")
+
+# Claude on Bedrock, via boto3 (auth = the AWS credential chain, handled by boto):
+claude_bedrock = AnthropicBedrockClient(
+    boto3.client("bedrock-runtime", region_name="us-east-1"),
+    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+)
+```
+
+All clients share the same generation config — `model_id`, optional `name` (the label used as `author`), `temperature`, `max_tokens`, `system_prompt`, `max_concurrency`. A model with no reliable structured output (most Bedrock families over the Invoke API fall back to best-effort prompt-injection) makes a fine *contestant* even if it's a flaky *judge* — which is exactly why the two roles are separate lists.
+
+Adding a provider is implementing the three-method Protocol — no framework surgery.
+
 ## How it works
 
-The pipeline is three pure-ish async functions, each a clean stage:
+The pipeline is three async functions, each a clean stage:
 
 | Stage | Function | In → Out |
 |-------|----------|----------|
-| Generate | `generate_all` | tasks × clients → `GenerationResult`s |
-| Build | `build_ranking_tasks` | generations grouped per task, aliased → `RankingTask`s |
-| Rank | `rank_all` | ranking tasks × clients → `RankingResult`s |
+| Generate | `generate_all(tasks, clients)` | tasks × clients → `GenerationResult`s |
+| Build | `build_ranking_tasks(tasks, generations, prompt)` | generations grouped per task, aliased → `RankingTask`s |
+| Rank | `rank_all(ranking_tasks, generations, clients)` | ranking tasks × clients → `RankingResult`s |
 
-Every stage fans its work out concurrently with `asyncio.gather`. Failures aren't thrown — each stage returns a `(results, failures)` pair of lists, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing `task_id`/`ranking_task_id`, the `author`, and the error type and message. One model timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
+Each stage fans its work out concurrently with `asyncio.gather`. **Failures aren't thrown** — each stage returns a `(results, failures)` pair, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing id, the `author`, and the error type and message. One model timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
 
-Ranking responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best-guess.
+Ranking responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best guess.
 
 ## Customizing the ranking
 
@@ -166,58 +187,43 @@ How a ranking model is prompted, constrained, and validated lives in a `RankingT
 - `schema` — the JSON schema its response is constrained to
 - `parse(data, valid_aliases)` — validation into a `ParsedRanking`
 
-`rank_all`/`rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common case — showing the ranking model the *original* prompt the models answered — is a one-method override, and the context is derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, and `.metadata` are all in reach):
+`rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common customization — showing the ranker the *original* prompt the models answered — is a one-method override, with the context derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, and `.metadata` are all in reach):
 
 ```python
 from collections.abc import Mapping
 from tournament_eval import DefaultRankingTemplate, GenerationResult, RankingTask
 
+
 class SourceAwareTemplate(DefaultRankingTemplate):
-    def render(self, ranking_task: RankingTask,
-               candidates: Mapping[str, GenerationResult]) -> str:
+    def render(self, ranking_task: RankingTask, candidates: Mapping[str, GenerationResult]) -> str:
         source = next(iter(candidates.values())).generation_prompt
         return f"The models were asked:\n{source}\n\n" + super().render(ranking_task, candidates)
 
-rankings, failures = await rank_all(ranking_tasks, generations, clients,
-                                    template=SourceAwareTemplate())
+
+rankings, failures = await rank_all(ranking_tasks, generations, clients, template=SourceAwareTemplate())
 ```
 
-Changing the *shape* of the verdict (e.g. allowing ties) means overriding all three methods so the prompt, schema, and parser stay consistent. (`candidates` exposes `.author`; don't render it into the prompt or you defeat the anonymization.)
+Changing the *shape* of the verdict (e.g. allowing ties) means overriding all three methods so the prompt, schema, and parser stay consistent. (`candidates` exposes `.author` — don't render it into the prompt, or you defeat the anonymization.)
 
 ## Concurrency
 
 Every stage fans out with `asyncio.gather`, so by default **every request fires at once**. The concurrency limit lives on the *client*, not the orchestration — because rate limits belong to the provider, not to the tournament.
 
 ```python
-# Per-client limit: at most 4 in-flight requests to this model.
-client = OpenAICompatibleLLMClient(
-    OpenAICompatibleModelConfig(model_name="gpt-4o", max_concurrency=4)
-)
+import asyncio
 
-# Shared global cap: hand the same semaphore to several clients and they
-# draw from one budget of 8 concurrent requests between them.
+# Per-client limit: at most 4 in-flight requests to this model.
+client = OpenAICompatibleClient(model_id="gpt-4o", base_url="...", api_key="...", max_concurrency=4)
+
+# Shared cap: hand the same semaphore to several clients and they draw from one budget.
 sem = asyncio.Semaphore(8)
 clients = [
-    OpenAICompatibleLLMClient(
-        OpenAICompatibleModelConfig(model_name="gpt-4o"), semaphore=sem
-    ),
-    OpenAICompatibleLLMClient(
-        OpenAICompatibleModelConfig(model_name="gpt-4o-mini"), semaphore=sem
-    ),
+    OpenAICompatibleClient(model_id="gpt-4o", base_url="...", api_key="...", semaphore=sem),
+    OpenAICompatibleClient(model_id="gpt-4o-mini", base_url="...", api_key="...", semaphore=sem),
 ]
 ```
 
-`max_concurrency` defaults to `None` — **unbounded**. That's the right default for a local server you control (an Ollama box on a workstation can happily serve many small-model requests at once), but against a rate-limited hosted API you almost certainly want a conservative value, set either per-client or as a shared semaphore.
-
-The same limit applies whether you call the whole-pipeline `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one` directly — bounding is the client's job, so a hand-rolled loop is throttled identically.
-
-**Clients are async context managers.** Each holds one reused connection pool, opened on entry and closed on exit. Using a client outside an `async with` raises `RuntimeError`:
-
-```python
-async with OllamaLLMClient(OllamaModelConfig(model_name="llama3.2")) as client:
-    text = await client.generate("hello")
-# for a list of clients, see the quickstart's AsyncExitStack
-```
+`max_concurrency` defaults to unbounded — fine for a local server you control, but against a rate-limited hosted API you'll want a conservative value, per-client or as a shared semaphore. The same limit applies whether you call the batch `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one`.
 
 ## Persistence & resume
 
@@ -242,50 +248,21 @@ Each write is a single synchronous append, so a process that dies mid-run keeps 
 ```python
 from tournament_eval import read_generation_result_file
 
-done = {
-    (r.task_id, r.author)
-    for r in read_generation_result_file("run/generations/llama3.2.jsonl")
-}
+done = {(r.task_id, r.author) for r in read_generation_result_file("run/generations/llama3.2.jsonl")}
 results, failures = await generate_all(tasks, clients, output="run", skip=done)
 ```
 
-Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. **Tasks are yours to persist** (`append_generation_task`), with one exception: ranking tasks carry a random alias assignment, so `build_ranking_tasks(..., output="run")` writes them once and you reload them with `read_ranking_task_file` on resume rather than rebuilding (a rebuild would re-shuffle and orphan everything already judged).
+Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. **Tasks are yours to persist** (`append_generation_task`), with one exception: ranking tasks carry a random alias assignment, so `build_ranking_tasks(..., output="run")` writes them once and you reload them with `read_ranking_task_file` on resume rather than rebuilding (a rebuild would re-shuffle and orphan everything already ranked).
 
-Aggregation is deliberately left to you — see below.
+## Scope
 
-## Status
+**Aggregation is intentionally out of scope.** The framework hands you the rankings and the reasoning; collapsing them into a verdict — Borda, Condorcet, Bradley–Terry, Elo over the pairwise implications, whatever fits — is a real methodological decision, not a detail to bury in a library. It's all ordinal-ranking math over data you already have on disk, so it's yours for now (and may arrive later as an opt-in convenience).
 
-This is an early, honest-about-it project.
+## Tested and typed
 
-Clients are layered so a new provider is four small methods, not a rewrite:
-
-- **`LLMClient`** — the provider-agnostic base: connection-pool lifecycle, the concurrency limit, and the `generate` / `generate_structured` contract. No wire-protocol knowledge.
-- **`HTTPLLMClient`** — the shared template for any HTTP+JSON chat API: build a payload, POST with retries, extract the text, parse JSON. A provider implements four hooks: `_endpoint_url`, `_headers`, `_build_payload`, `_extract_text`.
-- **`OpenAICompatibleLLMClient`** — the workhorse, for anything speaking the OpenAI `/chat/completions` protocol (the official API, `mlx_lm.server`, vLLM, llama.cpp). Point `base_url` at the server's `/v1` root; structured output uses a strict `json_schema`.
-- **`OllamaLLMClient`** — a *sibling*, not a subclass: Ollama speaks its own protocol on `/api/chat`. The payoff is structured output via Ollama's native `format` field, which takes a full JSON schema and **constrains decoding** to it — stronger than the OpenAI-compatible endpoint, which ignores `json_schema`.
-- **`AnthropicLLMClient`** — another `HTTPLLMClient` sibling, for Anthropic's native Messages API on `/v1/messages`. Auth is `x-api-key` + `anthropic-version` (not a Bearer token) and the system prompt is a top-level parameter. Structured output has two strategies (`structured_output` on the config): `"json_schema"` (default) lets the API enforce the schema via `output_config.format` — the same API-enforced path as the OpenAI/Ollama clients, compatible with extended thinking; `"tool_use"` is a forced tool call that works on every Claude model, the fallback for older ones. No SDK dependency; it's just `httpx` like its siblings.
-- **`BedrockLLMClient`** — a *thin* subclass of `OpenAICompatibleLLMClient` for Amazon Bedrock, which fronts every model it hosts (Claude, GPT, open-weight) behind the OpenAI `/chat/completions` protocol. It defaults to the `bedrock-mantle` endpoint built from `region` and authenticates with a Bedrock **API key** as a bearer token (falling back to `AWS_BEARER_TOKEN_BEDROCK`) — no `boto3`, no SigV4 (that can be added later as a config-selected auth mode). Because the protocol is OpenAI's, **Claude on Bedrock uses this client, not `AnthropicLLMClient`**:
-
-  ```python
-  from tournament_eval import BedrockLLMClient, BedrockModelConfig
-
-  client = BedrockLLMClient(
-      BedrockModelConfig(
-          model_name="us.anthropic.claude-sonnet-4-6",  # any Bedrock model id
-          region="us-east-1",                           # → bedrock-mantle.us-east-1.api.aws
-          # api_key=...  # or set AWS_BEARER_TOKEN_BEDROCK
-      )
-  )
-  ```
-
-  Structured output is inherited as a strict `response_format` `json_schema`; whether Bedrock *enforces* that for every model (notably Claude) isn't yet verified end-to-end, so the ranking path there should be tested against a live key.
-- **Aggregation math is intentionally out of scope.** The framework hands you the rankings and the reasoning. You own the question of how to collapse them into a verdict — and that choice is a real methodological decision, not a detail to bury in a library.
-
-## Tested, minimal, extensible
-
-- 100% source coverage, fully type-checked (`mypy --strict`) and linted (`ruff`).
-- Pure async functions, no hidden global state.
-- A layered client hierarchy — agnostic base, HTTP+JSON template, one provider = four hooks.
+- 100% source coverage; `mypy --strict` and `ruff` clean.
+- The client adapters are tested against their **real** SDKs offline — httpx-based clients through `httpx.MockTransport`, Bedrock through botocore's `Stubber` — so the tests exercise actual request serialization and response parsing, not stand-ins.
+- Pure async orchestration, no hidden global state.
 
 ```bash
 uv run pytest          # tests

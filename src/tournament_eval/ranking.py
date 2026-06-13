@@ -125,8 +125,7 @@ class DefaultRankingTemplate(RankingTemplate):
             "reasoning": {
                 "type": "string",
                 "description": (
-                    "Optional step-by-step analysis and explanation "
-                    "behind overall ranking and tie breakers."
+                    "Optional step-by-step analysis and explanation behind overall ranking and tie breakers."
                 ),
             },
         },
@@ -174,17 +173,13 @@ class DefaultRankingTemplate(RankingTemplate):
 
         ranking_raw = data.get("ranking")
         if not isinstance(ranking_raw, list):
-            raise ValueError(
-                f'"ranking" must be a list, got {type(ranking_raw).__name__}'
-            )
+            raise ValueError(f'"ranking" must be a list, got {type(ranking_raw).__name__}')
 
         ranking: list[str] = []
         seen: set[str] = set()
         for alias in ranking_raw:
             if not isinstance(alias, str):
-                raise ValueError(
-                    f"Ranking entry must be a string, got {type(alias).__name__}"
-                )
+                raise ValueError(f"Ranking entry must be a string, got {type(alias).__name__}")
             if alias not in valid_aliases:
                 raise ValueError(f"Unknown alias in ranking: {alias!r}")
             if alias in seen:
@@ -198,8 +193,6 @@ class DefaultRankingTemplate(RankingTemplate):
 
         reasoning = data.get("reasoning")
         if reasoning is not None and not isinstance(reasoning, str):
-            raise ValueError(
-                f'"reasoning" must be a string, got {type(reasoning).__name__}'
-            )
+            raise ValueError(f'"reasoning" must be a string, got {type(reasoning).__name__}')
 
         return ParsedRanking(ranking=ranking, reasoning=reasoning)

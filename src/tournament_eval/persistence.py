@@ -79,9 +79,7 @@ def _append_shared(output_dir: str | Path, filename: str, entity: object) -> Non
     _append_line(path, entity)
 
 
-def _append_sharded(
-    output_dir: str | Path, subdir: str, author: str, entity: object
-) -> None:
+def _append_sharded(output_dir: str | Path, subdir: str, author: str, entity: object) -> None:
     """Append ``entity`` to its author's shard under ``subdir``."""
     path = Path(output_dir) / subdir / f"{_sanitize_author(author)}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,9 +113,7 @@ def append_generation_result(output_dir: str | Path, result: GenerationResult) -
     _append_sharded(output_dir, GENERATION_RESULT_DIR, result.author, result)
 
 
-def append_generation_failure(
-    output_dir: str | Path, failure: GenerationFailure
-) -> None:
+def append_generation_failure(output_dir: str | Path, failure: GenerationFailure) -> None:
     """Append one generation failure to its model's stream."""
     _append_sharded(output_dir, GENERATION_FAILURE_DIR, failure.author, failure)
 

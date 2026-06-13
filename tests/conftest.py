@@ -1,153 +1,84 @@
-"""Shared pytest fixtures, fake clients, and HTTP handlers.
+"""Shared test scaffolding.
 
-All reusable test scaffolding lives here so test modules contain only tests:
+Two harnesses drive the clients offline against their *real* implementations:
 
-* :class:`FakeHTTPLLMClient` / ``make_http_client`` — a trivial concrete
-  :class:`HTTPLLMClient` for exercising the shared request/template/lifecycle.
-* ``make_handler`` / ``tracking_handler`` — ``httpx.MockTransport`` handlers.
-* ``make_openai_client`` / ``make_ollama_client`` — real provider clients.
-* :class:`MockLLMClient` / ``make_client`` — a canned-response client for the
-  orchestration tests.
-* ``make_task`` / ``make_generation`` / ``make_ranking_task`` — data factories.
+* ``http_mock`` / ``tracking_transport`` — :class:`httpx.MockTransport` builders.
+  Feed the transport to a real SDK client (``http_client=AsyncClient(transport=...)``)
+  or the built-in client (``client._transport = ...``); ``Recorder`` captures what
+  was sent so tests can assert the request the adapter produced.
+* ``bedrock_stub`` — a real ``bedrock-runtime`` client with ``invoke_model`` stubbed
+  via :class:`botocore.stub.Stubber`, returning a canned ``StreamingBody``.
+
+Plus a Protocol-satisfying :class:`MockLLMClient` for the orchestration tests (which
+shouldn't care about any wire protocol) and the data factories.
 """
 
 import asyncio
-import contextlib
-import json
+import io
 import uuid
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, Protocol
 
+import boto3
 import httpx
+import orjson
 import pytest
+from botocore.response import StreamingBody
+from botocore.stub import Stubber
 
-from tournament_eval.llm import (
-    AnthropicLLMClient,
-    AnthropicModelConfig,
-    BedrockLLMClient,
-    BedrockModelConfig,
-    HTTPLLMClient,
-    HTTPModelConfig,
-    LLMClient,
-    OllamaLLMClient,
-    OllamaModelConfig,
-    OpenAICompatibleLLMClient,
-    OpenAICompatibleModelConfig,
-    StructuredResponse,
-)
+from tournament_eval import StructuredResponse
 from tournament_eval.models import GenerationResult, GenerationTask, RankingTask
 
+# --------------------------------------------------------------------------- #
+# httpx MockTransport — drives the real httpx-based clients/SDKs offline        #
+# --------------------------------------------------------------------------- #
 
-class FakeHTTPLLMClient(HTTPLLMClient):
-    """A minimal concrete :class:`HTTPLLMClient` for exercising shared machinery.
 
-    The hooks are deliberately trivial: a fixed endpoint, plain JSON headers, a
-    payload that just carries the chat messages (plus ``schema`` when present),
-    and text read from a ``"text"`` field in the response body.  This lets the
-    generic request/template/lifecycle behaviour be tested without leaning on any
-    real provider's wire format.
-    """
+class Recorder:
+    """Captures the requests an httpx-based client sends."""
 
-    @property
-    def _endpoint_url(self) -> str:
-        return "http://test.local/v1/chat"
+    def __init__(self) -> None:
+        self.calls = 0
+        self.request: httpx.Request | None = None
 
     @property
-    def _headers(self) -> dict[str, str]:
-        return {"Content-Type": "application/json"}
+    def json(self) -> dict[str, Any]:
+        """The parsed JSON body of the most recent request."""
+        assert self.request is not None, "no request was captured"
+        parsed: dict[str, Any] = orjson.loads(self.request.content)
+        return parsed
 
-    def _build_payload(
-        self,
-        prompt: str,
-        *,
-        schema: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {"messages": self._messages(prompt)}
-        if schema is not None:
-            payload["schema"] = schema
-        return payload
 
-    def _extract_text(self, body: dict[str, object]) -> str:
-        return str(body["text"])
+_Response = dict[str, Any] | tuple[int, dict[str, Any]]
+_HttpMock = Callable[..., tuple[httpx.MockTransport, Recorder]]
 
 
 @pytest.fixture
-def make_http_client() -> Callable[..., FakeHTTPLLMClient]:
-    """Return a factory that builds :class:`FakeHTTPLLMClient` instances.
+def http_mock() -> _HttpMock:
+    """Build a ``(MockTransport, Recorder)`` from canned responses.
 
-    Pass an httpx handler to wire up a ``MockTransport``; any other keyword
-    becomes an :class:`HTTPModelConfig` field; ``semaphore`` is forwarded to the
-    client.
+    Each positional arg is a body dict (-> ``200``) or ``(status, body)``; successive
+    requests get successive responses, the last repeating.
     """
 
-    def _factory(
-        handler: Callable[[httpx.Request], httpx.Response] | None = None,
-        *,
-        semaphore: object | None = None,
-        **config_kwargs: object,
-    ) -> FakeHTTPLLMClient:
-        config_kwargs.setdefault("model_name", "fake")
-        client = FakeHTTPLLMClient(
-            HTTPModelConfig(**config_kwargs),  # type: ignore[arg-type]
-            semaphore=semaphore,  # type: ignore[arg-type]
-        )
-        if handler is not None:
-            client._transport = httpx.MockTransport(handler)
-        return client
-
-    return _factory
-
-
-@pytest.fixture
-def make_handler() -> Callable[
-    ..., tuple[Callable[[httpx.Request], httpx.Response], dict[str, object]]
-]:
-    """Return a factory for ``MockTransport`` handlers used with the fake client.
-
-    Each positional argument is one response, returned on successive calls (the
-    last repeats once exhausted):
-
-    * ``str``            -> ``200`` with body ``{"text": <str>}``
-    * ``(status, str)``  -> ``<status>`` with body ``{"text": <str>}``
-
-    Returns ``(handler, record)`` where ``record`` tracks ``"calls"`` and the
-    JSON body of the most recent request under ``"captured"``.
-    """
-
-    def _factory(
-        *responses: str | tuple[int, str],
-    ) -> tuple[Callable[[httpx.Request], httpx.Response], dict[str, object]]:
-        specs: list[tuple[int, dict[str, str]]] = []
-        for response in responses or ("ok",):
-            if isinstance(response, tuple):
-                status, text = response
-            else:
-                status, text = 200, response
-            specs.append((status, {"text": text}))
-
-        record: dict[str, object] = {"calls": 0, "captured": {}}
+    def _make(*responses: _Response) -> tuple[httpx.MockTransport, Recorder]:
+        specs: list[tuple[int, dict[str, Any]]] = [(200, r) if isinstance(r, dict) else r for r in (responses or ({},))]
+        recorder = Recorder()
 
         def handler(request: httpx.Request) -> httpx.Response:
-            record["calls"] = int(record["calls"]) + 1  # type: ignore[call-overload]
-            with contextlib.suppress(json.JSONDecodeError):
-                record["captured"] = json.loads(request.content)
-            status, body = specs[min(int(record["calls"]) - 1, len(specs) - 1)]  # type: ignore[call-overload]
+            recorder.request = request
+            recorder.calls += 1
+            status, body = specs[min(recorder.calls - 1, len(specs) - 1)]
             return httpx.Response(status, json=body)
 
-        return handler, record
+        return httpx.MockTransport(handler), recorder
 
-    return _factory
+    return _make
 
 
 @pytest.fixture
-def tracking_handler() -> tuple[
-    Callable[[httpx.Request], httpx.Response], dict[str, int]
-]:
-    """An async handler that records peak in-flight concurrency.
-
-    Returns ``(handler, state)`` where ``state`` tracks ``"inflight"`` and
-    ``"peak"``.  Share one handler across clients to measure a global cap.
-    """
+def tracking_transport() -> tuple[httpx.MockTransport, dict[str, int]]:
+    """An async MockTransport (chat-completions body) recording peak concurrency."""
     state = {"inflight": 0, "peak": 0}
 
     async def handler(_request: httpx.Request) -> httpx.Response:
@@ -155,57 +86,52 @@ def tracking_handler() -> tuple[
         state["peak"] = max(state["peak"], state["inflight"])
         await asyncio.sleep(0.01)
         state["inflight"] -= 1
-        return httpx.Response(200, json={"text": "ok"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
-    return handler, state  # type: ignore[return-value]
+    return httpx.MockTransport(handler), state
 
 
-@pytest.fixture
-def make_openai_client() -> Callable[..., OpenAICompatibleLLMClient]:
-    """Return a factory that builds :class:`OpenAICompatibleLLMClient` instances."""
+# --------------------------------------------------------------------------- #
+# botocore Stubber — drives the real bedrock-runtime client offline             #
+# --------------------------------------------------------------------------- #
 
-    def _factory(**config_kwargs: object) -> OpenAICompatibleLLMClient:
-        config_kwargs.setdefault("model_name", "gpt-4o")
-        return OpenAICompatibleLLMClient(OpenAICompatibleModelConfig(**config_kwargs))  # type: ignore[arg-type]
-
-    return _factory
+_BedrockStub = Callable[..., tuple[Any, Stubber]]
 
 
 @pytest.fixture
-def make_ollama_client() -> Callable[..., OllamaLLMClient]:
-    """Return a factory that builds :class:`OllamaLLMClient` instances."""
+def bedrock_stub() -> _BedrockStub:
+    """Build a real ``bedrock-runtime`` client with ``invoke_model`` stubbed.
 
-    def _factory(**config_kwargs: object) -> OllamaLLMClient:
-        config_kwargs.setdefault("model_name", "llama3")
-        return OllamaLLMClient(OllamaModelConfig(**config_kwargs))  # type: ignore[arg-type]
+    ``response`` is serialized to the canned ``StreamingBody``.  Use inside
+    ``with stubber:`` so the stub is active for the call.
+    """
 
-    return _factory
+    def _make(response: object, *, expected_params: dict[str, Any] | None = None) -> tuple[Any, Stubber]:
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name="us-east-1",
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+        )
+        data = orjson.dumps(response)
+        stubber = Stubber(client)
+        stubber.add_response(
+            "invoke_model",
+            {"body": StreamingBody(io.BytesIO(data), len(data)), "contentType": "application/json"},
+            expected_params,
+        )
+        return client, stubber
 
-
-@pytest.fixture
-def make_anthropic_client() -> Callable[..., AnthropicLLMClient]:
-    """Return a factory that builds :class:`AnthropicLLMClient` instances."""
-
-    def _factory(**config_kwargs: object) -> AnthropicLLMClient:
-        config_kwargs.setdefault("model_name", "claude-opus-4-8")
-        return AnthropicLLMClient(AnthropicModelConfig(**config_kwargs))  # type: ignore[arg-type]
-
-    return _factory
-
-
-@pytest.fixture
-def make_bedrock_client() -> Callable[..., BedrockLLMClient]:
-    """Return a factory that builds :class:`BedrockLLMClient` instances."""
-
-    def _factory(**config_kwargs: object) -> BedrockLLMClient:
-        config_kwargs.setdefault("model_name", "us.anthropic.claude-sonnet-4-6")
-        return BedrockLLMClient(BedrockModelConfig(**config_kwargs))  # type: ignore[arg-type]
-
-    return _factory
+    return _make
 
 
-class MockLLMClient(LLMClient):
-    """A fake LLM client for testing that returns pre-configured responses."""
+# --------------------------------------------------------------------------- #
+# Protocol-satisfying mock client — for the orchestration tests                 #
+# --------------------------------------------------------------------------- #
+
+
+class MockLLMClient:
+    """A canned-response client; satisfies the LLMClient protocol structurally."""
 
     def __init__(
         self,
@@ -215,7 +141,6 @@ class MockLLMClient(LLMClient):
         structured_responses: dict[str, dict[str, object]] | None = None,
         fail_on: set[str] | None = None,
     ) -> None:
-
         self._name = name
         self._generate = generate_responses or {}
         self._structured = structured_responses or {}
@@ -232,11 +157,7 @@ class MockLLMClient(LLMClient):
             raise RuntimeError(f"No mock response for prompt: {prompt!r}")
         return self._generate[prompt]
 
-    async def generate_structured(
-        self,
-        prompt: str,
-        _schema: dict[str, object],
-    ) -> StructuredResponse:
+    async def generate_structured(self, prompt: str, _schema: dict[str, object]) -> StructuredResponse:
         if prompt in self._fail_on:
             raise RuntimeError(f"Mock structured failure: {prompt}")
         if prompt not in self._structured:
@@ -266,6 +187,11 @@ def make_client() -> Callable[..., MockLLMClient]:
     return _factory
 
 
+# --------------------------------------------------------------------------- #
+# Data factories                                                                #
+# --------------------------------------------------------------------------- #
+
+
 class _MakeTask(Protocol):
     def __call__(self, prompt: str = "test prompt") -> GenerationTask: ...
 
@@ -291,8 +217,6 @@ class _MakeRankingTask(Protocol):
 
 @pytest.fixture
 def make_task() -> _MakeTask:
-    """Return a factory that creates GenerationTasks."""
-
     def _factory(prompt: str = "test prompt") -> GenerationTask:
         return GenerationTask(id=uuid.uuid4(), generation_prompt=prompt)
 
@@ -301,8 +225,6 @@ def make_task() -> _MakeTask:
 
 @pytest.fixture
 def make_generation() -> _MakeGeneration:
-    """Return a factory that creates GenerationResults."""
-
     def _factory(
         *,
         author: str = "test-model",
@@ -323,8 +245,6 @@ def make_generation() -> _MakeGeneration:
 
 @pytest.fixture
 def make_ranking_task() -> _MakeRankingTask:
-    """Return a factory that creates RankingTasks."""
-
     def _factory(
         *,
         ranking_prompt: str = "Rank.",

@@ -1,99 +1,94 @@
-"""OpenAI-compatible ``/chat/completions`` client and config."""
+"""OpenAI client over the official SDK's Responses API.  Requires the ``openai`` extra.
 
-import dataclasses
-import os
+Wraps an :class:`openai.AsyncOpenAI` you construct and own — auth, base URL,
+timeouts and retries are configured the SDK's way, so this adapter is just the
+shared :class:`~tournament_eval.llm.base.GenerationConfig` knobs mapped onto two
+``responses.create`` calls.  Nothing to open or close: the SDK client's lifecycle
+is yours (it's itself an async context manager).
+"""
 
-from tournament_eval.llm.base import HTTPLLMClient, HTTPModelConfig
+import asyncio
+from typing import Unpack
+
+import orjson
+from openai import AsyncOpenAI
+from openai.types.responses import Response, ResponseOutputMessage, ResponseOutputRefusal
+
+from tournament_eval.llm.base import (
+    GenerationConfig,
+    StructuredResponse,
+    concurrency_guard,
+)
 
 
-@dataclasses.dataclass(frozen=True)
-class OpenAICompatibleModelConfig(HTTPModelConfig):
-    """Configuration for any OpenAI-compatible ``/chat/completions`` server.
+class OpenAIClient:
+    """Adapter over a caller-provided :class:`openai.AsyncOpenAI` (Responses API)."""
 
-    Covers the official OpenAI API and the growing field of servers that speak
-    the same protocol (``mlx_lm.server``, vLLM, llama.cpp, ...).  Point
-    ``base_url`` at the server's ``/v1`` root.
-    """
-
-    api_key: str | None = None
-    """API key.  Falls back to the ``OPENAI_API_KEY`` environment variable if
-    ``None``.  Local servers usually ignore it."""
-    seed: int | None = None
-    """Optional seed for deterministic sampling."""
-
-
-class OpenAICompatibleLLMClient[C: OpenAICompatibleModelConfig](HTTPLLMClient[C]):
-    """Client for any OpenAI-compatible ``/chat/completions`` endpoint.
-
-    Talks to the official OpenAI API or any server that speaks the same protocol
-    (``mlx_lm.server``, vLLM, ...): point ``base_url`` at the server's ``/v1``
-    root.  Structured output uses ``response_format`` with a strict
-    ``json_schema``.
-
-    Generic over its config so a subclass (e.g. ``BedrockLLMClient``) can
-    re-bind ``C`` to a narrower config and still read its own fields off
-    ``self._config``.  Instantiated directly, ``C`` is inferred from the config
-    argument.
-    """
-
-    _DEFAULT_BASE_URL = "https://api.openai.com/v1"
-
-    @property
-    def _endpoint_url(self) -> str:
-        base = self._config.base_url or self._DEFAULT_BASE_URL
-        return f"{base.rstrip('/')}/chat/completions"
-
-    @property
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
-        key = self._config.api_key or os.environ.get("OPENAI_API_KEY")
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        return headers
-
-    def _build_payload(
+    def __init__(
         self,
-        prompt: str,
+        client: AsyncOpenAI,
         *,
-        schema: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "model": self._config.model_name,
-            "messages": self._messages(prompt),
-            "stream": False,
-        }
-        if self._config.temperature is not None:
-            payload["temperature"] = self._config.temperature
-        if self._config.max_tokens is not None:
-            payload["max_tokens"] = self._config.max_tokens
-        if self._config.seed is not None:
-            payload["seed"] = self._config.seed
-        if schema is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "structured_response",
-                    "schema": schema,
-                    "strict": True,
-                },
-            }
-        return payload
+        semaphore: asyncio.Semaphore | None = None,
+        **kwargs: Unpack[GenerationConfig],
+    ) -> None:
+        self._client = client
+        self._model_id = kwargs["model_id"]
+        self._name = kwargs.get("name")
+        self._temperature = kwargs.get("temperature", 1.0)
+        self._max_tokens = kwargs.get("max_tokens")
+        self._system_prompt = kwargs.get("system_prompt")
+        self._max_concurrency = kwargs.get("max_concurrency")
+        self._sem: asyncio.Semaphore | None = semaphore or (
+            asyncio.Semaphore(self._max_concurrency) if self._max_concurrency is not None else None
+        )
 
-    def _extract_text(self, body: dict[str, object]) -> str:
-        """Extract the assistant message text from a chat-completions body."""
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ValueError("OpenAI response missing a non-empty 'choices' list")
-        first = choices[0]
-        if not isinstance(first, dict):
-            raise ValueError("OpenAI 'choices[0]' is not an object")
-        message = first.get("message")
-        if not isinstance(message, dict):
-            raise ValueError("OpenAI response missing 'message'")
-        refusal = message.get("refusal")
-        if isinstance(refusal, str):
-            raise ValueError(f"Model refused to respond: {refusal}")
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise ValueError("OpenAI response 'content' is not a string")
-        return content
+    @property
+    def name(self) -> str:
+        return self._name or self._model_id
+
+    def _text(self, response: Response) -> str:
+        """Return the response text, raising if the model refused.
+
+        ``output_text`` silently drops refusal parts (a refusal yields ``""``),
+        so scan the output for one first and surface it as an error instead.
+        """
+        for item in response.output:
+            if isinstance(item, ResponseOutputMessage):
+                for part in item.content:
+                    if isinstance(part, ResponseOutputRefusal):
+                        raise ValueError(f"Model refused to respond: {part.refusal}")
+        return response.output_text
+
+    async def generate(self, prompt: str) -> str:
+        async with concurrency_guard(self._sem):
+            response = await self._client.responses.create(
+                model=self._model_id,
+                input=prompt,
+                instructions=self._system_prompt,
+                temperature=self._temperature,
+                max_output_tokens=self._max_tokens,
+            )
+        return self._text(response)
+
+    async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
+        async with concurrency_guard(self._sem):
+            response = await self._client.responses.create(
+                model=self._model_id,
+                input=prompt,
+                instructions=self._system_prompt,
+                temperature=self._temperature,
+                max_output_tokens=self._max_tokens,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "structured_response",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
+            )
+        raw = self._text(response)
+        parsed = orjson.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+        return StructuredResponse(data=parsed, raw=raw)
