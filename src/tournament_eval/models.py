@@ -358,10 +358,10 @@ class DefaultRankingTemplate(RankingTemplate):
                 'The "ranking" field must list every candidate alias exactly once,',
                 'from best to worst. The "reasoning" field is optional.',
                 (
-                    "NO TIES ARE ALLOWED. If two outputs appear equal, "
-                    "break the tie as you see fit."
+                    "NO TIES ARE ALLOWED. If two outputs appear equal, break "
+                    'the tie as you see fit and explain why in the "reasoning" '
+                    "field."
                 ),
-                'and explain why using the "reasoning" field.',
             ]
         )
         return "\n".join(lines)
