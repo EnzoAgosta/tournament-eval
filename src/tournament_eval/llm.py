@@ -187,7 +187,7 @@ class OllamaModelConfig(HTTPModelConfig):
     """Optional seed for deterministic sampling."""
 
 
-class LLMClient(abc.ABC):
+class LLMClient[C: ModelConfig](abc.ABC):
     """Abstract base class for LLM provider wrappers.
 
     Provider-agnostic on purpose: it owns the connection-pool lifecycle and the
@@ -221,11 +221,16 @@ class LLMClient(abc.ABC):
 
     The injected ``semaphore`` wins over ``config.max_concurrency``.  If neither
     is set the client is unbounded.
+
+    Generic over its config type ``C`` so each layer of the hierarchy sees
+    ``self._config`` at its most specific type — a subclass parameterised with a
+    narrower :class:`ModelConfig` reads its own fields off ``self._config``
+    directly, with no per-class re-aliasing.
     """
 
     def __init__(
         self,
-        config: ModelConfig,
+        config: C,
         *,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
@@ -299,7 +304,7 @@ class LLMClient(abc.ABC):
         ...
 
 
-class HTTPLLMClient(LLMClient):
+class HTTPLLMClient[C: HTTPModelConfig](LLMClient[C]):
     """Shared template for any HTTP+JSON chat API.
 
     Implements the full ``generate`` / ``generate_structured`` flow — build a
@@ -314,18 +319,9 @@ class HTTPLLMClient(LLMClient):
     * :meth:`_extract_text` — pull the assistant text out of the response body.
     """
 
-    def __init__(
-        self,
-        config: HTTPModelConfig,
-        *,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        super().__init__(config, semaphore=semaphore)
-        self._http_config = config
-
     @property
     def _http_timeout(self) -> float:
-        return self._http_config.timeout
+        return self._config.timeout
 
     @property
     @abc.abstractmethod
@@ -420,35 +416,31 @@ class HTTPLLMClient(LLMClient):
         return StructuredResponse(data=parsed, raw=raw)
 
 
-class OpenAICompatibleLLMClient(HTTPLLMClient):
+class OpenAICompatibleLLMClient[C: OpenAICompatibleModelConfig](HTTPLLMClient[C]):
     """Client for any OpenAI-compatible ``/chat/completions`` endpoint.
 
     Talks to the official OpenAI API or any server that speaks the same protocol
     (``mlx_lm.server``, vLLM, ...): point ``base_url`` at the server's ``/v1``
     root.  Structured output uses ``response_format`` with a strict
     ``json_schema``.
+
+    Generic over its config so a subclass (e.g. :class:`BedrockLLMClient`) can
+    re-bind ``C`` to a narrower config and still read its own fields off
+    ``self._config``.  Instantiated directly, ``C`` is inferred from the config
+    argument.
     """
 
     _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-    def __init__(
-        self,
-        config: OpenAICompatibleModelConfig,
-        *,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        super().__init__(config, semaphore=semaphore)
-        self._compat_config = config
-
     @property
     def _endpoint_url(self) -> str:
-        base = self._compat_config.base_url or self._DEFAULT_BASE_URL
+        base = self._config.base_url or self._DEFAULT_BASE_URL
         return f"{base.rstrip('/')}/chat/completions"
 
     @property
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        key = self._compat_config.api_key or os.environ.get("OPENAI_API_KEY")
+        key = self._config.api_key or os.environ.get("OPENAI_API_KEY")
         if key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
@@ -460,16 +452,16 @@ class OpenAICompatibleLLMClient(HTTPLLMClient):
         schema: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
-            "model": self._compat_config.model_name,
+            "model": self._config.model_name,
             "messages": self._messages(prompt),
             "stream": False,
         }
-        if self._compat_config.temperature is not None:
-            payload["temperature"] = self._compat_config.temperature
-        if self._compat_config.max_tokens is not None:
-            payload["max_tokens"] = self._compat_config.max_tokens
-        if self._compat_config.seed is not None:
-            payload["seed"] = self._compat_config.seed
+        if self._config.temperature is not None:
+            payload["temperature"] = self._config.temperature
+        if self._config.max_tokens is not None:
+            payload["max_tokens"] = self._config.max_tokens
+        if self._config.seed is not None:
+            payload["seed"] = self._config.seed
         if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -501,7 +493,7 @@ class OpenAICompatibleLLMClient(HTTPLLMClient):
         return content
 
 
-class BedrockLLMClient(OpenAICompatibleLLMClient):
+class BedrockLLMClient(OpenAICompatibleLLMClient[BedrockModelConfig]):
     """Amazon Bedrock, via its OpenAI-compatible ``/chat/completions`` endpoint.
 
     A *thin* subclass of :class:`OpenAICompatibleLLMClient`: Bedrock speaks the
@@ -527,32 +519,23 @@ class BedrockLLMClient(OpenAICompatibleLLMClient):
     body it needs to sign) without changing the shared template.
     """
 
-    def __init__(
-        self,
-        config: BedrockModelConfig,
-        *,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        super().__init__(config, semaphore=semaphore)
-        self._bedrock_config = config
-
     @property
     def _endpoint_url(self) -> str:
-        base = self._bedrock_config.base_url or (
-            f"https://bedrock-mantle.{self._bedrock_config.region}.api.aws/v1"
+        base = self._config.base_url or (
+            f"https://bedrock-mantle.{self._config.region}.api.aws/v1"
         )
         return f"{base.rstrip('/')}/chat/completions"
 
     @property
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        key = self._bedrock_config.api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        key = self._config.api_key or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
         if key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
 
 
-class AnthropicLLMClient(HTTPLLMClient):
+class AnthropicLLMClient(HTTPLLMClient[AnthropicModelConfig]):
     """Anthropic, via its native ``/v1/messages`` endpoint.
 
     A sibling of :class:`OpenAICompatibleLLMClient`, not a subclass: the Messages
@@ -580,18 +563,9 @@ class AnthropicLLMClient(HTTPLLMClient):
     _DEFAULT_MAX_TOKENS = 4096
     _STRUCTURED_TOOL_NAME = "structured_response"
 
-    def __init__(
-        self,
-        config: AnthropicModelConfig,
-        *,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        super().__init__(config, semaphore=semaphore)
-        self._anthropic_config = config
-
     @property
     def _endpoint_url(self) -> str:
-        base = self._anthropic_config.base_url or self._DEFAULT_BASE_URL
+        base = self._config.base_url or self._DEFAULT_BASE_URL
         return f"{base.rstrip('/')}/v1/messages"
 
     @property
@@ -600,7 +574,7 @@ class AnthropicLLMClient(HTTPLLMClient):
             "Content-Type": "application/json",
             "anthropic-version": self._ANTHROPIC_VERSION,
         }
-        key = self._anthropic_config.api_key or os.environ.get("ANTHROPIC_API_KEY")
+        key = self._config.api_key or os.environ.get("ANTHROPIC_API_KEY")
         if key:
             headers["x-api-key"] = key
         return headers
@@ -614,30 +588,29 @@ class AnthropicLLMClient(HTTPLLMClient):
         # `system` is a top-level parameter, not a turn, so the messages array is
         # user/assistant only — don't reuse HTTPLLMClient._messages here.
         payload: dict[str, object] = {
-            "model": self._anthropic_config.model_name,
+            "model": self._config.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": self._anthropic_config.max_tokens or self._DEFAULT_MAX_TOKENS,
+            "max_tokens": self._config.max_tokens or self._DEFAULT_MAX_TOKENS,
         }
-        if self._anthropic_config.system_prompt is not None:
-            payload["system"] = self._anthropic_config.system_prompt
-        if self._anthropic_config.temperature is not None:
-            payload["temperature"] = self._anthropic_config.temperature
-        thinking = self._anthropic_config.thinking
+        if self._config.system_prompt is not None:
+            payload["system"] = self._config.system_prompt
+        if self._config.temperature is not None:
+            payload["temperature"] = self._config.temperature
+        thinking = self._config.thinking
         if thinking == "adaptive":
             payload["thinking"] = {"type": "adaptive"}
         elif isinstance(thinking, int):
             payload["thinking"] = {"type": "enabled", "budget_tokens": thinking}
 
         json_schema_mode = (
-            schema is not None
-            and self._anthropic_config.structured_output == "json_schema"
+            schema is not None and self._config.structured_output == "json_schema"
         )
 
         # `effort` and `format` both live under `output_config`; build it once so
         # they coexist rather than clobbering each other.
         output_config: dict[str, object] = {}
-        if self._anthropic_config.effort is not None:
-            output_config["effort"] = self._anthropic_config.effort
+        if self._config.effort is not None:
+            output_config["effort"] = self._config.effort
         if json_schema_mode:
             output_config["format"] = {"type": "json_schema", "schema": schema}
         if output_config:
@@ -691,7 +664,7 @@ class AnthropicLLMClient(HTTPLLMClient):
         raise ValueError("Anthropic response had no 'text' or 'tool_use' block")
 
 
-class OllamaLLMClient(HTTPLLMClient):
+class OllamaLLMClient(HTTPLLMClient[OllamaModelConfig]):
     """Ollama, via its native ``/api/chat`` endpoint.
 
     A sibling of :class:`OpenAICompatibleLLMClient`, not a subclass: Ollama
@@ -703,18 +676,9 @@ class OllamaLLMClient(HTTPLLMClient):
 
     _DEFAULT_BASE_URL = "http://localhost:11434"
 
-    def __init__(
-        self,
-        config: OllamaModelConfig,
-        *,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        super().__init__(config, semaphore=semaphore)
-        self._ollama_config = config
-
     @property
     def _endpoint_url(self) -> str:
-        base = self._ollama_config.base_url or self._DEFAULT_BASE_URL
+        base = self._config.base_url or self._DEFAULT_BASE_URL
         return f"{base.rstrip('/')}/api/chat"
 
     @property
@@ -728,15 +692,15 @@ class OllamaLLMClient(HTTPLLMClient):
         schema: dict[str, object] | None = None,
     ) -> dict[str, object]:
         options: dict[str, object] = {}
-        if self._ollama_config.temperature is not None:
-            options["temperature"] = self._ollama_config.temperature
-        if self._ollama_config.max_tokens is not None:
-            options["num_predict"] = self._ollama_config.max_tokens
-        if self._ollama_config.seed is not None:
-            options["seed"] = self._ollama_config.seed
+        if self._config.temperature is not None:
+            options["temperature"] = self._config.temperature
+        if self._config.max_tokens is not None:
+            options["num_predict"] = self._config.max_tokens
+        if self._config.seed is not None:
+            options["seed"] = self._config.seed
 
         payload: dict[str, object] = {
-            "model": self._ollama_config.model_name,
+            "model": self._config.model_name,
             "messages": self._messages(prompt),
             "stream": False,
             "options": options,

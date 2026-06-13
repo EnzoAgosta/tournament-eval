@@ -38,7 +38,7 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 
 from tournament_eval import persistence
-from tournament_eval.llm import LLMClient
+from tournament_eval.llm import LLMClient, ModelConfig
 from tournament_eval.models import (
     DefaultRankingTemplate,
     GenerationFailure,
@@ -63,7 +63,7 @@ def _build_generation_lookup(
 
 async def generate_one(
     task: GenerationTask,
-    client: LLMClient,
+    client: LLMClient[ModelConfig],
     *,
     output: str | Path | None = None,
 ) -> GenerationResult | GenerationFailure:
@@ -112,7 +112,7 @@ async def generate_one(
 
 async def generate_all(
     tasks: list[GenerationTask],
-    clients: Sequence[LLMClient],
+    clients: Sequence[LLMClient[ModelConfig]],
     *,
     output: str | Path | None = None,
     skip: Collection[tuple[uuid.UUID, str]] = (),
@@ -265,7 +265,7 @@ def build_ranking_tasks(
 
 async def rank_one(
     ranking_task: RankingTask,
-    client: LLMClient,
+    client: LLMClient[ModelConfig],
     generation_lookup: dict[uuid.UUID, GenerationResult],
     *,
     template: RankingTemplate | None = None,
@@ -332,7 +332,7 @@ async def rank_one(
 async def rank_all(
     ranking_tasks: list[RankingTask],
     generation_results: list[GenerationResult],
-    clients: Sequence[LLMClient],
+    clients: Sequence[LLMClient[ModelConfig]],
     *,
     template: RankingTemplate | None = None,
     output: str | Path | None = None,
