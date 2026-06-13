@@ -24,6 +24,8 @@ import pytest
 from tournament_eval.llm import (
     AnthropicLLMClient,
     AnthropicModelConfig,
+    BedrockLLMClient,
+    BedrockModelConfig,
     HTTPLLMClient,
     HTTPModelConfig,
     LLMClient,
@@ -187,6 +189,17 @@ def make_anthropic_client() -> Callable[..., AnthropicLLMClient]:
     def _factory(**config_kwargs: object) -> AnthropicLLMClient:
         config_kwargs.setdefault("model_name", "claude-opus-4-8")
         return AnthropicLLMClient(AnthropicModelConfig(**config_kwargs))  # type: ignore[arg-type]
+
+    return _factory
+
+
+@pytest.fixture
+def make_bedrock_client() -> Callable[..., BedrockLLMClient]:
+    """Return a factory that builds :class:`BedrockLLMClient` instances."""
+
+    def _factory(**config_kwargs: object) -> BedrockLLMClient:
+        config_kwargs.setdefault("model_name", "us.anthropic.claude-sonnet-4-6")
+        return BedrockLLMClient(BedrockModelConfig(**config_kwargs))  # type: ignore[arg-type]
 
     return _factory
 

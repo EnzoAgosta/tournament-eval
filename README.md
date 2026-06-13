@@ -238,6 +238,21 @@ Clients are layered so a new provider is four small methods, not a rewrite:
 - **`OpenAICompatibleLLMClient`** — the workhorse, for anything speaking the OpenAI `/chat/completions` protocol (the official API, `mlx_lm.server`, vLLM, llama.cpp). Point `base_url` at the server's `/v1` root; structured output uses a strict `json_schema`.
 - **`OllamaLLMClient`** — a *sibling*, not a subclass: Ollama speaks its own protocol on `/api/chat`. The payoff is structured output via Ollama's native `format` field, which takes a full JSON schema and **constrains decoding** to it — stronger than the OpenAI-compatible endpoint, which ignores `json_schema`.
 - **`AnthropicLLMClient`** — another `HTTPLLMClient` sibling, for Anthropic's native Messages API on `/v1/messages`. Auth is `x-api-key` + `anthropic-version` (not a Bearer token) and the system prompt is a top-level parameter. Structured output has two strategies (`structured_output` on the config): `"json_schema"` (default) lets the API enforce the schema via `output_config.format` — the same API-enforced path as the OpenAI/Ollama clients, compatible with extended thinking; `"tool_use"` is a forced tool call that works on every Claude model, the fallback for older ones. No SDK dependency; it's just `httpx` like its siblings.
+- **`BedrockLLMClient`** — a *thin* subclass of `OpenAICompatibleLLMClient` for Amazon Bedrock, which fronts every model it hosts (Claude, GPT, open-weight) behind the OpenAI `/chat/completions` protocol. It defaults to the `bedrock-mantle` endpoint built from `region` and authenticates with a Bedrock **API key** as a bearer token (falling back to `AWS_BEARER_TOKEN_BEDROCK`) — no `boto3`, no SigV4 (that can be added later as a config-selected auth mode). Because the protocol is OpenAI's, **Claude on Bedrock uses this client, not `AnthropicLLMClient`**:
+
+  ```python
+  from tournament_eval import BedrockLLMClient, BedrockModelConfig
+
+  client = BedrockLLMClient(
+      BedrockModelConfig(
+          model_name="us.anthropic.claude-sonnet-4-6",  # any Bedrock model id
+          region="us-east-1",                           # → bedrock-mantle.us-east-1.api.aws
+          # api_key=...  # or set AWS_BEARER_TOKEN_BEDROCK
+      )
+  )
+  ```
+
+  Structured output is inherited as a strict `response_format` `json_schema`; whether Bedrock *enforces* that for every model (notably Claude) isn't yet verified end-to-end, so the ranking path there should be tested against a live key.
 - **Aggregation math is intentionally out of scope.** The framework hands you the rankings and the reasoning. You own the question of how to collapse them into a verdict — and that choice is a real methodological decision, not a detail to bury in a library.
 
 ## Tested, minimal, extensible

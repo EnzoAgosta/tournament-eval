@@ -7,6 +7,8 @@ every model generates outputs, then every model judges all outputs.
 from .llm import (
     AnthropicLLMClient,
     AnthropicModelConfig,
+    BedrockLLMClient,
+    BedrockModelConfig,
     HTTPLLMClient,
     HTTPModelConfig,
     LLMClient,
@@ -49,6 +51,8 @@ from .persistence import (
 __all__ = [
     "AnthropicLLMClient",
     "AnthropicModelConfig",
+    "BedrockLLMClient",
+    "BedrockModelConfig",
     "GenerationFailure",
     "GenerationFailureDict",
     "GenerationResult",
