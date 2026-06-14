@@ -58,9 +58,9 @@ class RankingTemplate(abc.ABC):
     * :meth:`schema` — the JSON schema its response is constrained to.
     * :meth:`parse` — validation of that response into a :class:`ParsedRanking`.
 
-    Subclass to customise ranking.  The common case — injecting context such as
-    the original generation prompt — is a one-method override of :meth:`render`;
-    each candidate is passed as its full :class:`GenerationResult`, so ``.output``,
+    Subclass to customise ranking.  Adding context (a grading rubric, domain
+    notes) is a one-method override of :meth:`render`; each candidate is passed as
+    its full :class:`GenerationResult`, so ``.output``, ``.reasoning``,
     ``.generation_prompt`` and ``.metadata`` are all in reach.  Changing the
     *shape* of the verdict (e.g. allowing ties) means overriding all three.
 
@@ -107,10 +107,19 @@ class RankingTemplate(abc.ABC):
 class DefaultRankingTemplate(RankingTemplate):
     """The built-in ranking model: a strict total order over the candidates, no ties.
 
-    Prompts with the ranking instruction plus the anonymised candidate outputs,
-    constrains the reply to ``{"ranking": [...], "reasoning": ...}``, and validates
-    that every alias appears exactly once.
+    The prompt shows the original task the models were given (shared across
+    candidates, so it leaks no authorship) followed by the anonymised candidate
+    outputs and the ranking instruction; the reply is constrained to
+    ``{"ranking": [...], "reasoning": ...}`` and validated so every alias appears
+    exactly once.
+
+    Set ``include_reasoning=True`` to also surface each candidate's reasoning trace
+    (when it has one) to the ranker.  It's off by default: traces are long, and a
+    verbose reasoner can look more thorough than it is, biasing the panel.
     """
+
+    def __init__(self, *, include_reasoning: bool = False) -> None:
+        self.include_reasoning = include_reasoning
 
     _SCHEMA: ClassVar[dict[str, object]] = {
         "type": "object",
@@ -136,9 +145,16 @@ class DefaultRankingTemplate(RankingTemplate):
         ranking_task: RankingTask,
         candidates: Mapping[str, GenerationResult],
     ) -> str:
-        lines: list[str] = [ranking_task.ranking_prompt, "", "Candidates:"]
+        lines: list[str] = []
+        first = next(iter(candidates.values()), None)
+        if first is not None:
+            lines += [f"The models were given this task:\n{first.generation_prompt}", ""]
+
+        lines += [ranking_task.ranking_prompt, "", "Candidates:"]
         for alias, result in candidates.items():
             lines.append(f"{alias}. {result.output}")
+            if self.include_reasoning and result.reasoning:
+                lines.append(f"{alias} reasoning: {result.reasoning}")
 
         lines.extend(
             [

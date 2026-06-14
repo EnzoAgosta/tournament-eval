@@ -26,18 +26,36 @@ def test_schema_constrains_ranking() -> None:
     assert schema["required"] == ["ranking"]
 
 
-def test_render_includes_prompt_candidates_and_format(
+def test_render_includes_source_prompt_candidates_and_format(
     make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
 ) -> None:
-    gen_a = make_generation(output="hello")
+    gen_a = make_generation(output="hello")  # generation_prompt defaults to "test prompt"
     gen_b = make_generation(output="world")
     task = make_ranking_task(ranking_prompt="Rank by charm.", generations={"A": gen_a.id, "B": gen_b.id})
     prompt = DefaultRankingTemplate().render(task, {"A": gen_a, "B": gen_b})
+    assert "test prompt" in prompt  # the source task, surfaced by default
     assert "Rank by charm." in prompt
     assert "A. hello" in prompt
     assert "B. world" in prompt
     assert '"ranking"' in prompt
     assert "NO TIES" in prompt
+
+
+def test_render_omits_reasoning_by_default(
+    make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
+) -> None:
+    gen = make_generation(output="hello", reasoning="i thought hard")
+    task = make_ranking_task(generations={"A": gen.id})
+    assert "i thought hard" not in DefaultRankingTemplate().render(task, {"A": gen})
+
+
+def test_render_includes_reasoning_when_enabled(
+    make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
+) -> None:
+    gen = make_generation(output="hello", reasoning="i thought hard")
+    task = make_ranking_task(generations={"A": gen.id})
+    prompt = DefaultRankingTemplate(include_reasoning=True).render(task, {"A": gen})
+    assert "i thought hard" in prompt
 
 
 class TestDefaultParse:
@@ -79,18 +97,17 @@ class TestDefaultParse:
             DefaultRankingTemplate().parse({"ranking": ["A"], "reasoning": 1}, {"A"})
 
 
-def test_custom_template_can_inject_source(
+def test_custom_template_can_add_context(
     make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
 ) -> None:
-    """The headline extensibility case: a template that surfaces the source prompt."""
+    """Extensibility: a template that prepends extra context onto the default prompt."""
 
-    class SourceAware(DefaultRankingTemplate):
+    class RubricAware(DefaultRankingTemplate):
         def render(self, ranking_task: RankingTask, candidates: Mapping[str, GenerationResult]) -> str:
-            source = next(iter(candidates.values())).generation_prompt
-            return f"SOURCE: {source}\n\n{super().render(ranking_task, candidates)}"
+            return f"Grading rubric: prioritise factual accuracy.\n\n{super().render(ranking_task, candidates)}"
 
     gen = make_generation(output="bonjour")
     task = make_ranking_task(generations={"A": gen.id})
-    prompt = SourceAware().render(task, {"A": gen})
-    assert prompt.startswith("SOURCE: test prompt")
+    prompt = RubricAware().render(task, {"A": gen})
+    assert prompt.startswith("Grading rubric: prioritise factual accuracy.")
     assert "A. bonjour" in prompt

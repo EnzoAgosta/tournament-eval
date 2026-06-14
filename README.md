@@ -187,20 +187,29 @@ How a ranking model is prompted, constrained, and validated lives in a `RankingT
 - `schema` — the JSON schema its response is constrained to
 - `parse(data, valid_aliases)` — validation into a `ParsedRanking`
 
-`rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common customization — showing the ranker the *original* prompt the models answered — is a one-method override, with the context derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, `.reasoning`, and `.metadata` are all in reach):
+`rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). By default it shows the ranker the **original task the models answered** — shared across candidates, so it leaks no authorship — followed by the anonymized outputs. To also surface each candidate's **reasoning trace**, flip one flag (off by default, since traces are long and a verbose reasoner can look more thorough than it is):
+
+```python
+rankings, failures = await rank_all(
+    ranking_tasks, generations, clients, template=DefaultRankingTemplate(include_reasoning=True)
+)
+```
+
+For anything more, subclass. Adding context (a rubric, domain notes) is a one-method override of `render` — each candidate is passed as its full `GenerationResult`, so `.output`, `.reasoning`, `.generation_prompt`, and `.metadata` are all in reach:
 
 ```python
 from collections.abc import Mapping
 from tournament_eval import DefaultRankingTemplate, GenerationResult, RankingTask
 
 
-class SourceAwareTemplate(DefaultRankingTemplate):
+class RubricTemplate(DefaultRankingTemplate):
     def render(self, ranking_task: RankingTask, candidates: Mapping[str, GenerationResult]) -> str:
-        source = next(iter(candidates.values())).generation_prompt
-        return f"The models were asked:\n{source}\n\n" + super().render(ranking_task, candidates)
+        return "Grading rubric: prioritise factual accuracy over fluency.\n\n" + super().render(
+            ranking_task, candidates
+        )
 
 
-rankings, failures = await rank_all(ranking_tasks, generations, clients, template=SourceAwareTemplate())
+rankings, failures = await rank_all(ranking_tasks, generations, clients, template=RubricTemplate())
 ```
 
 Changing the *shape* of the verdict (e.g. allowing ties) means overriding all three methods so the prompt, schema, and parser stay consistent. (`candidates` exposes `.author` — don't render it into the prompt, or you defeat the anonymization.)
