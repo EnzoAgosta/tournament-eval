@@ -19,10 +19,26 @@ and close it afterwards — so the caller just passes clients, no ``async with``
     tasks = [GenerationTask(id=..., generation_prompt="Translate ... into French."), ...]
     clients = [OpenAICompatibleClient(model_id="...", base_url="...", api_key="...")]
 
-    generations, gen_failures = await generate_all(tasks, clients, output="runs/demo")
+    generations, gen_failures = await generate_all(
+        tasks, clients, results_path="run/generations.jsonl", failures_path="run/generation_failures.jsonl"
+    )
 
-    ranking_tasks = build_ranking_tasks(tasks, generations, "Rank by fluency and accuracy.")
-    rankings, rank_failures = await rank_all(ranking_tasks, generations, clients, output="runs/demo")
+    ranking_tasks = build_ranking_tasks(
+        tasks, generations, "Rank by fluency and accuracy.", tasks_path="run/ranking_tasks.jsonl"
+    )
+    rankings, rank_failures = await rank_all(
+        ranking_tasks, generations, clients,
+        results_path="run/rankings.jsonl", failures_path="run/ranking_failures.jsonl",
+    )
+
+**Resume is automatic.**  When a ``results_path`` is given, :func:`generate_all` /
+:func:`rank_all` read it back first and skip every ``(task, author)`` pair that
+already succeeded, running only what's left and returning the *complete* set
+(loaded plus newly produced).  So a partial run is finished by just running the
+script again — no skip lists to thread through.  Successes are skipped; failures
+are always retried (fix the cause, rerun).  Per call the return is a clean
+partition: ``results`` is every pair with a success, ``failures`` every pair still
+without one.
 
 Aggregation — collapsing the per-ranker rankings into a leaderboard (Borda, Elo, ...) —
 is intentionally out of scope; the pipeline hands you validated ranked data to score
@@ -33,7 +49,7 @@ import asyncio
 import contextlib
 import random
 import uuid
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from tournament_eval import persistence
@@ -62,6 +78,29 @@ def _build_generation_lookup(
     return {result.id: result for result in generation_results}
 
 
+def _completed_pairs[T](
+    records: list[T],
+    *,
+    key: Callable[[T], tuple[uuid.UUID, str]],
+    valid_ids: set[uuid.UUID],
+    valid_authors: set[str],
+) -> dict[tuple[uuid.UUID, str], T]:
+    """Index already-succeeded records by their ``(task/ranking-task id, author)``.
+
+    The skip set for resume: any pair present here is left un-run, and the values
+    are the loaded successes the batch returns alongside what it produces.  Pairs
+    outside the current universe (a task dropped from ``tasks``, or an author no
+    longer among ``clients``) are filtered out, and duplicates collapse by pair, so
+    the result stays a clean partition of every (task, client) pair.
+    """
+    done: dict[tuple[uuid.UUID, str], T] = {}
+    for record in records:
+        left, author = key(record)
+        if left in valid_ids and author in valid_authors:
+            done[(left, author)] = record
+    return done
+
+
 async def _open_clients(clients: list[LLMClient], stack: contextlib.AsyncExitStack) -> list[LLMClient]:
     """Enter the clients that are async context managers; pass the rest through.
 
@@ -84,7 +123,8 @@ async def generate_one(
     task: GenerationTask,
     client: LLMClient,
     *,
-    output: str | Path | None = None,
+    results_path: str | Path | None = None,
+    failures_path: str | Path | None = None,
 ) -> GenerationResult | GenerationFailure:
     """Call a single client for a single task.
 
@@ -97,15 +137,15 @@ async def generate_one(
     means a hand-rolled loop over :func:`generate_one` gets the same bounding as
     :func:`generate_all` for free.
 
-    Unlike :func:`generate_all`, this does not manage the client's lifecycle — it
-    assumes a ready-to-use client.  Driving a resource-owning client (the built-in
-    :class:`~tournament_eval.llm.OpenAICompatibleClient`) through :func:`generate_one`
-    directly means opening it yourself (``async with client: ...``).
+    Unlike :func:`generate_all`, this does not manage the client's lifecycle (open
+    a resource-owning client yourself, ``async with client: ...``) and does **not**
+    resume — it always runs.  Resume is a batch concern; see :func:`generate_all`.
 
-    If ``output`` is a directory, the result or failure is appended to that
-    run's JSONL files as soon as it is produced (see
-    :mod:`tournament_eval.persistence`).  Only the model call is guarded, so a
-    persistence error propagates rather than masquerading as a failure.
+    If ``results_path`` / ``failures_path`` is given, the produced
+    :class:`GenerationResult` / :class:`GenerationFailure` is appended to that file
+    as soon as it lands (see :mod:`tournament_eval.persistence`).  Only the model
+    call is guarded, so a persistence error propagates rather than masquerading as
+    a failure.
     """
     result: GenerationResult | GenerationFailure
     try:
@@ -126,11 +166,11 @@ async def generate_one(
             message=str(err),
         )
 
-    if output is not None:
-        if isinstance(result, GenerationResult):
-            persistence.append_generation_result(output, result)
-        else:
-            persistence.append_generation_failure(output, result)
+    if isinstance(result, GenerationResult):
+        if results_path is not None:
+            persistence.append_record(results_path, result)
+    elif failures_path is not None:
+        persistence.append_record(failures_path, result)
     return result
 
 
@@ -138,8 +178,8 @@ async def generate_all(
     tasks: list[GenerationTask],
     clients: Iterable[LLMClient],
     *,
-    output: str | Path | None = None,
-    skip: Collection[tuple[uuid.UUID, str]] = (),
+    results_path: str | Path | None = None,
+    failures_path: str | Path | None = None,
 ) -> tuple[list[GenerationResult], list[GenerationFailure]]:
     """Run every client against every task to produce GenerationResults.
 
@@ -147,6 +187,11 @@ async def generate_all(
     built-in :class:`~tournament_eval.llm.OpenAICompatibleClient`) are opened for the
     duration of the batch and closed on exit; SDK-backed clients pass through.  So no
     caller-side ``async with`` is needed — pass clients and go.
+
+    **Resume is automatic** when ``results_path`` is set: the file is read back
+    first and every ``(task_id, author)`` pair already recorded there is skipped,
+    so re-running the script finishes an interrupted run.  Only *successes* are
+    skipped; a pair that previously failed is retried.
 
     Parameters
     ----------
@@ -156,44 +201,46 @@ async def generate_all(
         The models that will generate outputs.  Any iterable (list, tuple, set,
         generator); it is materialised once, so a single-pass iterator is safe
         even though every task is paired with every client.
-    output : str | Path | None
-        If set, a run directory: each result or failure is streamed to its
-        per-model JSONL file as it lands.  Persisting the *tasks* is the
-        caller's responsibility (see ``persistence.append_generation_task``);
-        this writes only the pipeline's own output.
-    skip : Collection[tuple[uuid.UUID, str]]
-        ``(task_id, author)`` pairs to leave un-run (an author is a client's
-        ``name``).  To resume an interrupted run, pass the pairs already
-        recorded under ``output`` — read them back with
-        ``persistence.read_generation_result_file`` /
-        ``read_generation_failure_file`` and take ``(rec.task_id, rec.author)``.
+    results_path : str | Path | None
+        If set, the GenerationResults file: each success is streamed to it as it
+        lands, and on entry it is read back to skip pairs already done (resume).
+        Persisting the *tasks* is yours (``persistence.append_record``).
+    failures_path : str | Path | None
+        If set, the GenerationFailures file: each failure is appended as it lands.
+        It is a write-only log — not read for resume — so across reruns it may hold
+        several entries for a pair that kept failing.
 
     Returns
     -------
     tuple[list[GenerationResult], list[GenerationFailure]]
-        The results and failures for the pairs run *this call* (i.e. excluding
-        anything in ``skip``).  One :class:`GenerationResult` per successful
-        (task, client) pair — its ``output`` is the model's answer verbatim (no
-        cleaning) and ``reasoning`` carries the trace when the provider surfaced
-        one — and one :class:`GenerationFailure` per pair whose client raised.
-        When ``output`` is set, the same records are also streamed to the run
-        directory.
+        A partition of every (task, client) pair: ``results`` is every pair that
+        now has a success (loaded from ``results_path`` plus produced this call),
+        and ``failures`` is every pair still without one.  A result's ``output`` is the
+        model's answer verbatim (no cleaning); ``reasoning`` carries the trace when
+        the provider surfaced one.
     """
-    skip_set = set(skip)
+    clients = list(clients)
+    loaded = persistence.read_generation_result_file(results_path) if results_path is not None else []
+    done = _completed_pairs(
+        loaded,
+        key=lambda r: (r.task_id, r.author),
+        valid_ids={task.id for task in tasks},
+        valid_authors={client.name for client in clients},
+    )
+
     async with contextlib.AsyncExitStack() as stack:
         # Open any clients that own resources (e.g. the built-in httpx pool) for
-        # the duration of the batch, closing them all on exit; SDK clients pass
-        # through. `clients` is materialised here (re-iterated once per task).
-        live = await _open_clients(list(clients), stack)
+        # the duration of the batch, closing them all on exit; SDK clients pass through.
+        live = await _open_clients(clients, stack)
         coros = [
-            generate_one(task, client, output=output)
+            generate_one(task, client, results_path=results_path, failures_path=failures_path)
             for task in tasks
             for client in live
-            if (task.id, client.name) not in skip_set
+            if (task.id, client.name) not in done
         ]
         outcomes = await asyncio.gather(*coros)
 
-    generation_results: list[GenerationResult] = []
+    generation_results: list[GenerationResult] = list(done.values())
     generation_failures: list[GenerationFailure] = []
     for outcome in outcomes:
         if isinstance(outcome, GenerationResult):
@@ -207,13 +254,15 @@ def build_ranking_task(
     results: list[GenerationResult],
     ranking_prompt: str,
     *,
-    output: str | Path | None = None,
+    tasks_path: str | Path | None = None,
     random_seed: int | None = None,
 ) -> RankingTask:
     """Build one RankingTask from a single task's GenerationResults.
 
     The ``results`` are shuffled before aliases (A, B, C...) are assigned, so a
-    model's position bias (e.g. always picking "A") doesn't track authorship.
+    model's position bias (e.g. always picking "A") doesn't track authorship.  The
+    originating task is taken from ``results[0].task_id`` (all results must be for
+    the same task) and recorded as the RankingTask's ``generation_task_id``.
 
     Parameters
     ----------
@@ -221,9 +270,9 @@ def build_ranking_task(
         The outputs for one GenerationTask.  Must be non-empty.
     ranking_prompt : str
         The ranking instructions to embed in the RankingTask.
-    output : str | Path | None
-        If a directory, the task is appended to the run's ranking-tasks file as
-        soon as it is built (mirrors ``generate_one``).
+    tasks_path : str | Path | None
+        If set, the RankingTask is appended to this ranking-tasks file as soon as
+        it is built (mirrors ``generate_one``).
     random_seed : int | None
         Seed for the alias shuffle; ``None`` for nondeterministic.
 
@@ -232,6 +281,9 @@ def build_ranking_task(
     RankingTask
         Maps aliases to the GenerationResult IDs, in shuffled order.
     """
+    if not results:
+        raise ValueError("build_ranking_task needs at least one GenerationResult")
+
     shuffled = list(results)
     rng = random.Random(random_seed)
     rng.shuffle(shuffled)
@@ -239,11 +291,12 @@ def build_ranking_task(
     alias_map: dict[str, uuid.UUID] = {alias_for_index(i): result.id for i, result in enumerate(shuffled)}
     ranking_task = RankingTask(
         id=uuid.uuid4(),
+        generation_task_id=results[0].task_id,
         ranking_prompt=ranking_prompt,
         generations=alias_map,
     )
-    if output is not None:
-        persistence.append_ranking_task(output, ranking_task)
+    if tasks_path is not None:
+        persistence.append_record(tasks_path, ranking_task)
     return ranking_task
 
 
@@ -252,13 +305,26 @@ def build_ranking_tasks(
     generation_results: list[GenerationResult],
     ranking_prompt: str,
     *,
-    output: str | Path | None = None,
+    tasks_path: str | Path | None = None,
     random_seed: int | None = None,
 ) -> list[RankingTask]:
     """Group GenerationResults by task and create RankingTasks with aliases.
 
     A thin fan-out over :func:`build_ranking_task` — one RankingTask per task that
     produced at least one output.
+
+    **Resume is per-task** when ``tasks_path`` is set: the file is read back and any
+    task that already has a persisted RankingTask reuses it as-is; only tasks
+    without one are (re)built and appended.  This is deliberately *frozen* — a
+    task's RankingTask, once built, is never rebuilt, because rebuilding would
+    re-shuffle the aliases and orphan every ranking already collected against it.
+
+    The consequence: a generation that lands *after* its task's RankingTask was
+    built (e.g. a flaky model that only succeeded on a later resume) will **not**
+    be added to that task's candidate set.  So build ranking tasks only once
+    generation is fully done — run :func:`generate_all` until its ``failures`` are
+    empty before calling this.  To deliberately rebuild, delete the ranking-tasks
+    file (and any rankings already collected) first.
 
     Parameters
     ----------
@@ -268,11 +334,9 @@ def build_ranking_tasks(
         The outputs produced by ``generate_all``.
     ranking_prompt : str
         The ranking instructions to embed in every RankingTask.
-    output : str | Path | None
-        If set, each task is appended to this run directory as it is built (via
-        :func:`build_ranking_task`).  Because their IDs and alias assignment are
-        random, build them once and reuse the persisted set on resume
-        (``persistence.read_ranking_task_file``) rather than calling this again.
+    tasks_path : str | Path | None
+        If set, RankingTasks are streamed here as built and read back for per-task
+        resume (see above).
     random_seed : int | None
         Seed for the per-task alias shuffle; ``None`` for nondeterministic.
 
@@ -286,11 +350,22 @@ def build_ranking_tasks(
     for result in generation_results:
         results_by_task.setdefault(result.task_id, []).append(result)
 
-    return [
-        build_ranking_task(results, ranking_prompt, output=output, random_seed=random_seed)
-        for task in tasks
-        if (results := results_by_task.get(task.id, []))
-    ]
+    existing = {}
+    if tasks_path is not None:
+        existing = {rt.generation_task_id: rt for rt in persistence.read_ranking_task_file(tasks_path)}
+
+    ranking_tasks: list[RankingTask] = []
+    for task in tasks:
+        results = results_by_task.get(task.id, [])
+        if not results:
+            continue
+        if task.id in existing:
+            ranking_tasks.append(existing[task.id])  # frozen: reuse, never rebuild
+        else:
+            ranking_tasks.append(
+                build_ranking_task(results, ranking_prompt, tasks_path=tasks_path, random_seed=random_seed)
+            )
+    return ranking_tasks
 
 
 async def rank_one(
@@ -299,7 +374,8 @@ async def rank_one(
     generation_lookup: dict[uuid.UUID, GenerationResult],
     *,
     template: RankingTemplate | None = None,
-    output: str | Path | None = None,
+    results_path: str | Path | None = None,
+    failures_path: str | Path | None = None,
 ) -> RankingResult | RankingFailure:
     """Call a single client as a ranking model for a single RankingTask.
 
@@ -310,12 +386,12 @@ async def rank_one(
     :class:`DefaultRankingTemplate`) owns the prompt, the response schema, and the
     validation — subclass it to inject context or change the ranking contract.
 
-    As with :func:`generate_one`, concurrency is bounded by the client itself and the
-    client's lifecycle is the caller's (:func:`rank_all` manages it for a batch).
-    If ``output`` is a directory, the result or failure is appended to that
-    run's JSONL files as soon as it is produced.  Only the ranking call is
-    guarded, so a persistence error propagates rather than masquerading as a
-    failure.
+    As with :func:`generate_one`, concurrency is bounded by the client itself, the
+    client's lifecycle is the caller's (:func:`rank_all` manages it for a batch),
+    and there is no resume — it always runs.  If ``results_path`` / ``failures_path``
+    is given, the produced record is appended to that file as soon as it lands.
+    Only the ranking call is guarded, so a persistence error propagates rather than
+    masquerading as a failure.
     """
     template = template or _DEFAULT_TEMPLATE
     candidates = {alias: generation_lookup[gen_id] for alias, gen_id in ranking_task.generations.items()}
@@ -347,11 +423,11 @@ async def rank_one(
             message=str(exc),
         )
 
-    if output is not None:
-        if isinstance(result, RankingResult):
-            persistence.append_ranking_result(output, result)
-        else:
-            persistence.append_ranking_failure(output, result)
+    if isinstance(result, RankingResult):
+        if results_path is not None:
+            persistence.append_record(results_path, result)
+    elif failures_path is not None:
+        persistence.append_record(failures_path, result)
     return result
 
 
@@ -361,8 +437,8 @@ async def rank_all(
     clients: Iterable[LLMClient],
     *,
     template: RankingTemplate | None = None,
-    output: str | Path | None = None,
-    skip: Collection[tuple[uuid.UUID, str]] = (),
+    results_path: str | Path | None = None,
+    failures_path: str | Path | None = None,
 ) -> tuple[list[RankingResult], list[RankingFailure]]:
     """Run every client as a ranking model against every RankingTask.
 
@@ -371,6 +447,10 @@ async def rank_all(
     ``ranking_prompt`` and the candidates.  Each client receives the assembled
     prompt and returns a structured ranking.  Like :func:`generate_all`, resource-owning
     clients are opened for the batch and closed on exit (no caller-side ``async with``).
+
+    **Resume is automatic** when ``results_path`` is set, exactly as in
+    :func:`generate_all` but keyed on ``(ranking_task_id, author)``: already-recorded
+    successes are skipped and returned alongside what's produced this call.
 
     Parameters
     ----------
@@ -386,51 +466,52 @@ async def rank_all(
     template : RankingTemplate | None
         The ranking contract (prompt, schema, validation).  ``None`` uses
         :class:`DefaultRankingTemplate` — a strict total order with no ties.
-    output : str | Path | None
-        If set, a run directory: each result or failure is streamed to its
-        ranking model's JSONL file as it lands.  The ranking *tasks* are persisted
-        when built (``build_ranking_tasks(..., output=...)``), not here — on
-        resume pass those persisted tasks (``persistence.read_ranking_task_file``),
-        since they carry random IDs and a shuffled alias map that must not be
-        rebuilt.
-    skip : Collection[tuple[uuid.UUID, str]]
-        ``(ranking_task_id, author)`` pairs to leave un-run (an author is a
-        client's ``name``).  To resume, pass the pairs already recorded under
-        ``output`` — read them back with ``persistence.read_ranking_result_file``
-        / ``read_ranking_failure_file`` and take ``(rec.ranking_task_id,
-        rec.author)``.
+    results_path : str | Path | None
+        If set, the RankingResults file: each success is streamed to it as it
+        lands, and on entry it is read back to skip pairs already done (resume).
+        The ranking *tasks* are persisted separately when built
+        (``build_ranking_tasks(..., tasks_path=...)``).
+    failures_path : str | Path | None
+        If set, the RankingFailures file: each failure is appended as it lands.
+        A write-only log (not read for resume).
 
     Returns
     -------
     tuple[list[RankingResult], list[RankingFailure]]
-        The results and failures for the pairs run *this call*.  One
-        :class:`RankingResult` per successful (ranking_task, client) pair, and
-        one :class:`RankingFailure` per pair whose ranking model raised or returned a
-        malformed ranking.  When ``output`` is set, the same records are also
-        streamed to the run directory.
+        A partition of every (ranking_task, client) pair: ``results`` is every pair
+        that now has a success (loaded from ``results_path`` plus produced this
+        call), and ``failures`` every pair still without one (the ranking model raised or
+        returned a malformed ranking).
     """
+    clients = list(clients)
     generation_lookup = _build_generation_lookup(generation_results)
+    loaded = persistence.read_ranking_result_file(results_path) if results_path is not None else []
+    done = _completed_pairs(
+        loaded,
+        key=lambda r: (r.ranking_task_id, r.author),
+        valid_ids={ranking_task.id for ranking_task in ranking_tasks},
+        valid_authors={client.name for client in clients},
+    )
 
-    skip_set = set(skip)
     async with contextlib.AsyncExitStack() as stack:
-        # Open resource-owning clients for the batch (see generate_all); SDK
-        # clients pass through. `clients` is materialised here.
-        live = await _open_clients(list(clients), stack)
+        # Open resource-owning clients for the batch (see generate_all); SDK clients pass through.
+        live = await _open_clients(clients, stack)
         coros = [
             rank_one(
                 ranking_task,
                 client,
                 generation_lookup,
                 template=template,
-                output=output,
+                results_path=results_path,
+                failures_path=failures_path,
             )
             for ranking_task in ranking_tasks
             for client in live
-            if (ranking_task.id, client.name) not in skip_set
+            if (ranking_task.id, client.name) not in done
         ]
         outcomes = await asyncio.gather(*coros)
 
-    ranking_results: list[RankingResult] = []
+    ranking_results: list[RankingResult] = list(done.values())
     ranking_failures: list[RankingFailure] = []
     for outcome in outcomes:
         if isinstance(outcome, RankingResult):

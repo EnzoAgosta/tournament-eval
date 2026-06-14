@@ -213,6 +213,7 @@ class _MakeRankingTask(Protocol):
         *,
         ranking_prompt: str = "Rank.",
         generations: dict[str, uuid.UUID] | None = None,
+        generation_task_id: uuid.UUID | None = None,
     ) -> RankingTask: ...
 
 
@@ -251,9 +252,11 @@ def make_ranking_task() -> _MakeRankingTask:
         *,
         ranking_prompt: str = "Rank.",
         generations: dict[str, uuid.UUID] | None = None,
+        generation_task_id: uuid.UUID | None = None,
     ) -> RankingTask:
         return RankingTask(
             id=uuid.uuid4(),
+            generation_task_id=generation_task_id or uuid.uuid4(),
             ranking_prompt=ranking_prompt,
             generations=generations or {},
         )

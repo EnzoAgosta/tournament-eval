@@ -227,32 +227,34 @@ clients = [
 
 ## Persistence & resume
 
-A tournament is expensive — many model calls — so the pipeline can stream every result and failure to disk *as it lands*. Pass `output=<dir>` and the run becomes a directory of JSON Lines files, split by record type and (for the per-model streams) by author:
-
-```
-run/
-  generation_tasks.jsonl             # your inputs — you persist these
-  generations/<model>.jsonl          # one result per line, appended as it completes
-  generation_failures/<model>.jsonl
-  ranking_tasks.jsonl
-  rankings/<judge>.jsonl
-  ranking_failures/<judge>.jsonl
-```
+A tournament is expensive — many model calls — so the pipeline streams every result and failure to disk *as it lands*. You choose the file paths; there's no directory layout or naming convention to learn. Typically one flat JSONL file per stream:
 
 ```python
-results, failures = await generate_all(tasks, clients, output="run")
+results, failures = await generate_all(
+    tasks, clients,
+    results_path="run/generations.jsonl",
+    failures_path="run/generation_failures.jsonl",
+)
 ```
 
-Each write is a single synchronous append, so a process that dies mid-run keeps everything finished so far. **Resume** by handing back the pairs already on disk via `skip`:
+Each write is a single synchronous append, so a process that dies mid-run keeps everything finished so far. There's no per-model sharding — every record carries its own `author` and `task_id`, so a flat file is fully reconstructable; group or filter on read.
+
+**Resume is automatic — just run the script again.** When you pass a `results_path`, `generate_all` reads it back first and skips every `(task, author)` pair that already succeeded, running only what's left and returning the **complete** set (loaded plus newly produced). So the return value is always a clean partition: `results` is every pair that now has a success, `failures` every pair still without one. Successes are skipped; **failures are always retried** — fix the cause (rate limit, API key, a flaky endpoint) and rerun, and only the still-broken pairs go out again.
 
 ```python
-from tournament_eval import read_generation_result_file
-
-done = {(r.task_id, r.author) for r in read_generation_result_file("run/generations/llama3.2.jsonl")}
-results, failures = await generate_all(tasks, clients, output="run", skip=done)
+# Run once, get interrupted, run the exact same call again — it picks up where it left off.
+results, failures = await generate_all(
+    tasks, clients,
+    results_path="run/generations.jsonl",
+    failures_path="run/generation_failures.jsonl",
+)
 ```
 
-Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. **Tasks are yours to persist** (`append_generation_task`), with one exception: ranking tasks carry a random alias assignment, so `build_ranking_tasks(..., output="run")` writes them once and you reload them with `read_ranking_task_file` on resume rather than rebuilding (a rebuild would re-shuffle and orphan everything already ranked).
+`rank_all` works identically, keyed on `(ranking_task, judge)` against its own `results_path`.
+
+Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. Writing anything yourself (e.g. persisting your tasks) is the one type-agnostic `append_record(path, record)`.
+
+**One caveat — ranking tasks freeze.** A `RankingTask` carries a random alias shuffle, so `build_ranking_tasks(..., tasks_path="run/ranking_tasks.jsonl")` builds each task once and, on a rerun, reuses the persisted one rather than rebuilding (a rebuild would re-shuffle and orphan every ranking already collected). The consequence: a generation that only succeeds on a *later* resume won't be added to an already-built ranking task. So **let generation finish before you start ranking** — run `generate_all` until its `failures` are empty, then build ranking tasks. To deliberately rebuild, delete the ranking-tasks file (and any rankings) first.
 
 ## Scope
 

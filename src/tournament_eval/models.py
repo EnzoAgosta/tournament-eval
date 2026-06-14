@@ -114,6 +114,7 @@ class GenerationResult:
 
 class RankingTaskDict(TypedDict):
     id: str
+    generation_task_id: str
     ranking_prompt: str
     generations: dict[str, str]
 
@@ -128,6 +129,10 @@ class RankingTask:
 
     id: uuid.UUID
     """Unique identifier for this ranking task."""
+    generation_task_id: uuid.UUID
+    """The :class:`GenerationTask` whose outputs this ranks.  Records provenance
+    (so a ranking traces straight back to its source task) and is the key used to
+    reuse a persisted ranking task on resume instead of rebuilding it."""
     ranking_prompt: str
     """The ranking instructions to be used when ranking the candidates."""
     generations: dict[str, uuid.UUID]
@@ -139,6 +144,7 @@ class RankingTask:
         """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
+            generation_task_id=uuid.UUID(data["generation_task_id"]),
             ranking_prompt=data["ranking_prompt"],
             generations={alias: uuid.UUID(gid) for alias, gid in data["generations"].items()},
         )

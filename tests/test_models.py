@@ -50,10 +50,17 @@ def test_generation_result_from_json() -> None:
 
 def test_ranking_task_from_json() -> None:
     rt_id, gen_a, gen_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    gen_task_id = uuid.uuid4()
     task = RankingTask.from_json(
-        {"id": str(rt_id), "ranking_prompt": "rank", "generations": {"A": str(gen_a), "B": str(gen_b)}}
+        {
+            "id": str(rt_id),
+            "generation_task_id": str(gen_task_id),
+            "ranking_prompt": "rank",
+            "generations": {"A": str(gen_a), "B": str(gen_b)},
+        }
     )
     assert task.id == rt_id
+    assert task.generation_task_id == gen_task_id
     assert task.generations == {"A": gen_a, "B": gen_b}
 
 

@@ -1,12 +1,14 @@
 """Tests for the orchestration pipeline.
 
 These use Protocol-satisfying mock clients (canned behaviour, no wire protocol) —
-the right altitude for testing fan-out, lifecycle, failure isolation, skip/resume,
+the right altitude for testing fan-out, lifecycle, failure isolation, resume,
 and persistence, none of which should care what a client is backed by.
 """
 
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
 from tournament_eval import GenerationResponse, StructuredResponse
@@ -25,11 +27,6 @@ from tournament_eval.orchestration import (
     rank_one,
 )
 from tournament_eval.persistence import (
-    GENERATION_FAILURE_DIR,
-    GENERATION_RESULT_DIR,
-    RANKING_FAILURE_DIR,
-    RANKING_RESULT_DIR,
-    RANKING_TASK_FILE,
     read_generation_failure_file,
     read_generation_result_file,
     read_ranking_failure_file,
@@ -118,12 +115,15 @@ class TestGenerateOne:
         assert (result.author, result.error_type) == ("a", "RuntimeError")
 
     async def test_persists_result(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
-        result = await generate_one(make_task("p"), make_client("a", generate_responses={"p": "out"}), output=tmp_path)
-        assert read_generation_result_file(tmp_path / GENERATION_RESULT_DIR / "a.jsonl") == [result]
+        path = tmp_path / "generations.jsonl"
+        client = make_client("a", generate_responses={"p": "out"})
+        result = await generate_one(make_task("p"), client, results_path=path)
+        assert read_generation_result_file(path) == [result]
 
     async def test_persists_failure(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
-        result = await generate_one(make_task("p"), make_client("a", fail_on={"p"}), output=tmp_path)
-        assert read_generation_failure_file(tmp_path / GENERATION_FAILURE_DIR / "a.jsonl") == [result]
+        path = tmp_path / "generation_failures.jsonl"
+        result = await generate_one(make_task("p"), make_client("a", fail_on={"p"}), failures_path=path)
+        assert read_generation_failure_file(path) == [result]
 
 
 class TestGenerateAll:
@@ -135,14 +135,6 @@ class TestGenerateAll:
         assert {r.author for r in results} == {"a"}
         assert {f.author for f in failures} == {"b"}
 
-    async def test_skip_excludes_pairs(self, make_client: Any, make_task: _MakeTask) -> None:
-        task = make_task("p")
-        results, failures = await generate_all(
-            [task], [make_client("a", generate_responses={"p": "x"})], skip={(task.id, "a")}
-        )
-        assert results == []
-        assert failures == []
-
     async def test_opens_and_closes_context_manager_clients(self, make_client: Any, make_task: _MakeTask) -> None:
         managed = _ManagedClient("cm")
         plain = make_client("plain", generate_responses={"p": "x"})
@@ -151,13 +143,46 @@ class TestGenerateAll:
         assert managed.closed
         assert {r.author for r in results} == {"cm", "plain"}
 
-    async def test_streams_to_output(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
+    async def test_streams_to_results_path(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
         task = make_task("p")
-        results, _ = await generate_all([task], [make_client("a", generate_responses={"p": "out"})], output=tmp_path)
-        assert read_generation_result_file(tmp_path / GENERATION_RESULT_DIR / "a.jsonl") == results
+        path = tmp_path / "generations.jsonl"
+        results, _ = await generate_all(
+            [task], [make_client("a", generate_responses={"p": "out"})], results_path=path
+        )
+        assert read_generation_result_file(path) == results
 
     async def test_empty(self) -> None:
         assert await generate_all([], []) == ([], [])
+
+    async def test_resume_skips_done_and_returns_complete_set(
+        self, tmp_path: Path, make_client: Any, make_task: _MakeTask
+    ) -> None:
+        task = make_task("p")
+        path = tmp_path / "generations.jsonl"
+        # First run: 'a' succeeds and is persisted; 'b' fails (nothing persisted for it).
+        a1 = make_client("a", generate_responses={"p": "out"})
+        b1 = make_client("b", fail_on={"p"})
+        run1_results, run1_failures = await generate_all([task], [a1, b1], results_path=path)
+        assert {r.author for r in run1_results} == {"a"}
+        assert {f.author for f in run1_failures} == {"b"}
+
+        # Second run: 'a' is skipped (loaded from disk), 'b' is retried and now succeeds.
+        a2 = make_client("a", fail_on={"p"})  # would fail if re-run — proves it's skipped
+        b2 = make_client("b", generate_responses={"p": "fixed"})
+        run2_results, run2_failures = await generate_all([task], [a2, b2], results_path=path)
+        assert run2_failures == []
+        # Returns the COMPLETE set: 'a' loaded from disk + 'b' produced this call.
+        assert {(r.author, r.output) for r in run2_results} == {("a", "out"), ("b", "fixed")}
+
+    async def test_resume_ignores_records_outside_current_universe(
+        self, tmp_path: Path, make_client: Any, make_task: _MakeTask
+    ) -> None:
+        task = make_task("p")
+        path = tmp_path / "generations.jsonl"
+        # Persist a result for a client no longer in the pool.
+        await generate_one(task, make_client("stale", generate_responses={"p": "old"}), results_path=path)
+        results, _ = await generate_all([task], [make_client("a", generate_responses={"p": "out"})], results_path=path)
+        assert {r.author for r in results} == {"a"}  # 'stale' filtered out
 
 
 # --------------------------------------------------------------------------- #
@@ -185,9 +210,19 @@ class TestBuildRankingTasks:
         build_ranking_task(results, "R", random_seed=1)
         assert results == before
 
+    def test_records_generation_task_id(self, make_task: _MakeTask, make_generation: _MakeGeneration) -> None:
+        t = make_task()
+        task = build_ranking_task([make_generation(task_id=t.id), make_generation(task_id=t.id)], "R")
+        assert task.generation_task_id == t.id
+
+    def test_empty_results_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            build_ranking_task([], "R")
+
     def test_persists(self, tmp_path: Path, make_generation: _MakeGeneration) -> None:
-        task = build_ranking_task([make_generation()], "R", output=tmp_path)
-        assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == [task]
+        path = tmp_path / "ranking_tasks.jsonl"
+        task = build_ranking_task([make_generation()], "R", tasks_path=path)
+        assert read_ranking_task_file(path) == [task]
 
     def test_groups_by_task(self, make_task: _MakeTask, make_generation: _MakeGeneration) -> None:
         t1, t2 = make_task(), make_task()
@@ -205,6 +240,23 @@ class TestBuildRankingTasks:
         t1, t2 = make_task(), make_task()
         tasks = build_ranking_tasks([t1, t2], [make_generation(task_id=t1.id)], "R")
         assert len(tasks) == 1
+
+    def test_resume_reuses_persisted_tasks_frozen(
+        self, tmp_path: Path, make_task: _MakeTask, make_generation: _MakeGeneration
+    ) -> None:
+        t = make_task()
+        path = tmp_path / "ranking_tasks.jsonl"
+        first = build_ranking_tasks([t], [make_generation(task_id=t.id)], "R", tasks_path=path, random_seed=1)
+        # Rebuild with a *different* candidate set + seed: the persisted task is reused as-is, not rebuilt.
+        second = build_ranking_tasks(
+            [t],
+            [make_generation(task_id=t.id), make_generation(task_id=t.id)],
+            "R",
+            tasks_path=path,
+            random_seed=2,
+        )
+        assert second == first
+        assert read_ranking_task_file(path) == first  # nothing new appended
 
 
 # --------------------------------------------------------------------------- #
@@ -247,17 +299,19 @@ class TestRankOne:
     ) -> None:
         a = make_generation()
         task = make_ranking_task(generations={"A": a.id})
-        result = await rank_one(task, _RankingClient(ranking=["A"]), {a.id: a}, output=tmp_path)
-        assert read_ranking_result_file(tmp_path / RANKING_RESULT_DIR / "judge.jsonl") == [result]
+        path = tmp_path / "rankings.jsonl"
+        result = await rank_one(task, _RankingClient(ranking=["A"]), {a.id: a}, results_path=path)
+        assert read_ranking_result_file(path) == [result]
 
     async def test_persists_failure(
         self, tmp_path: Path, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
     ) -> None:
         a = make_generation()
         task = make_ranking_task(generations={"A": a.id})
-        result = await rank_one(task, _RankingClient(fail=True), {a.id: a}, output=tmp_path)
+        path = tmp_path / "ranking_failures.jsonl"
+        result = await rank_one(task, _RankingClient(fail=True), {a.id: a}, failures_path=path)
         assert isinstance(result, RankingFailure)
-        assert read_ranking_failure_file(tmp_path / RANKING_FAILURE_DIR / "judge.jsonl") == [result]
+        assert read_ranking_failure_file(path) == [result]
 
 
 class TestRankAll:
@@ -270,14 +324,18 @@ class TestRankAll:
         assert not failures
         assert results[0].ranking == [a.id, b.id]
 
-    async def test_skip_excludes_pairs(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
+    async def test_resume_skips_done_and_returns_complete_set(
+        self, tmp_path: Path, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
     ) -> None:
         a = make_generation()
         task = make_ranking_task(generations={"A": a.id})
-        results, failures = await rank_all([task], [a], [_RankingClient("j", ranking=["A"])], skip={(task.id, "j")})
-        assert results == []
-        assert failures == []
+        path = tmp_path / "rankings.jsonl"
+        run1, _ = await rank_all([task], [a], [_RankingClient("j", ranking=["A"])], results_path=path)
+        assert [r.author for r in run1] == ["j"]
+        # Rerun: 'j' would fail if re-invoked, but it's loaded from disk and skipped.
+        run2, failures2 = await rank_all([task], [a], [_RankingClient("j", fail=True)], results_path=path)
+        assert failures2 == []
+        assert run2 == run1
 
     async def test_failing_judge_becomes_a_failure(
         self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask

@@ -1,4 +1,4 @@
-"""Tests for directory-based JSONL persistence."""
+"""Tests for flat-file JSONL persistence: one type-agnostic writer, typed readers."""
 
 import uuid
 from pathlib import Path
@@ -14,20 +14,7 @@ from tournament_eval.models import (
     RankingTask,
 )
 from tournament_eval.persistence import (
-    GENERATION_FAILURE_DIR,
-    GENERATION_RESULT_DIR,
-    GENERATION_TASK_FILE,
-    RANKING_FAILURE_DIR,
-    RANKING_RESULT_DIR,
-    RANKING_TASK_FILE,
-    _append_line,
-    _sanitize_author,
-    append_generation_failure,
-    append_generation_result,
-    append_generation_task,
-    append_ranking_failure,
-    append_ranking_result,
-    append_ranking_task,
+    append_record,
     read_generation_failure_file,
     read_generation_result_file,
     read_generation_task_file,
@@ -62,19 +49,12 @@ def _ranking_result(author: str, reasoning: str | None) -> RankingResult:
     )
 
 
-class TestSanitizeAuthor:
-    def test_unsafe_chars_replaced(self) -> None:
-        assert _sanitize_author("meta-llama/Llama-3:8b") == "meta-llama_Llama-3_8b"
-
-    def test_empty_falls_back(self) -> None:
-        assert _sanitize_author("") == "_"
-
-
 class TestRoundTrip:
     def test_generation_task(self, tmp_path: Path, make_task: _MakeTask) -> None:
         task = make_task("translate this")
-        append_generation_task(tmp_path, task)
-        assert read_generation_task_file(tmp_path / GENERATION_TASK_FILE) == [task]
+        path = tmp_path / "generation_tasks.jsonl"
+        append_record(path, task)
+        assert read_generation_task_file(path) == [task]
 
     def test_generation_result_full_fidelity(self, tmp_path: Path) -> None:
         result = GenerationResult(
@@ -83,48 +63,68 @@ class TestRoundTrip:
             generation_prompt="p",
             output="o",
             reasoning="thinking out loud",
-            author="org/model:tag",  # unsafe filename chars
+            author="org/model:tag",  # unsafe chars no longer matter — author is a field, not a filename
             metadata={"latency": 1.5, "tokens": 12},
         )
-        append_generation_result(tmp_path, result)
-        path = tmp_path / GENERATION_RESULT_DIR / "org_model_tag.jsonl"  # sanitized stem
-        assert path.exists()
+        path = tmp_path / "generations.jsonl"
+        append_record(path, result)
         assert read_generation_result_file(path) == [result]
 
     def test_generation_failure(self, tmp_path: Path) -> None:
         failure = GenerationFailure(task_id=uuid.uuid4(), author="m", error_type="RuntimeError", message="boom")
-        append_generation_failure(tmp_path, failure)
-        assert read_generation_failure_file(tmp_path / GENERATION_FAILURE_DIR / "m.jsonl") == [failure]
+        path = tmp_path / "generation_failures.jsonl"
+        append_record(path, failure)
+        assert read_generation_failure_file(path) == [failure]
 
     def test_ranking_task(self, tmp_path: Path) -> None:
-        task = RankingTask(id=uuid.uuid4(), ranking_prompt="rank", generations={"A": uuid.uuid4()})
-        append_ranking_task(tmp_path, task)
-        assert read_ranking_task_file(tmp_path / RANKING_TASK_FILE) == [task]
+        task = RankingTask(
+            id=uuid.uuid4(),
+            generation_task_id=uuid.uuid4(),
+            ranking_prompt="rank",
+            generations={"A": uuid.uuid4()},
+        )
+        path = tmp_path / "ranking_tasks.jsonl"
+        append_record(path, task)
+        assert read_ranking_task_file(path) == [task]
 
     @pytest.mark.parametrize("reasoning", ["because", None])
     def test_ranking_result(self, tmp_path: Path, reasoning: str | None) -> None:
         result = _ranking_result("judge", reasoning)
-        append_ranking_result(tmp_path, result)
-        assert read_ranking_result_file(tmp_path / RANKING_RESULT_DIR / "judge.jsonl") == [result]
+        path = tmp_path / "rankings.jsonl"
+        append_record(path, result)
+        assert read_ranking_result_file(path) == [result]
 
     def test_ranking_failure(self, tmp_path: Path) -> None:
         failure = RankingFailure(ranking_task_id=uuid.uuid4(), author="judge", error_type="ValueError", message="bad")
-        append_ranking_failure(tmp_path, failure)
-        assert read_ranking_failure_file(tmp_path / RANKING_FAILURE_DIR / "judge.jsonl") == [failure]
+        path = tmp_path / "ranking_failures.jsonl"
+        append_record(path, failure)
+        assert read_ranking_failure_file(path) == [failure]
 
 
-class TestReadBehaviour:
+class TestWriterBehaviour:
     def test_appends_accumulate(self, tmp_path: Path) -> None:
         task_id = uuid.uuid4()
         g1, g2 = _result(task_id, "m", "o1"), _result(task_id, "m", "o2")
-        append_generation_result(tmp_path, g1)
-        append_generation_result(tmp_path, g2)
-        assert read_generation_result_file(tmp_path / GENERATION_RESULT_DIR / "m.jsonl") == [g1, g2]
+        path = tmp_path / "generations.jsonl"
+        append_record(path, g1)
+        append_record(path, g2)
+        assert read_generation_result_file(path) == [g1, g2]
 
+    def test_creates_missing_parent_dirs(self, tmp_path: Path) -> None:
+        path = tmp_path / "nested" / "deeper" / "generations.jsonl"
+        append_record(path, _result(uuid.uuid4(), "m"))
+        assert path.exists()
+
+    def test_rejects_directory(self, tmp_path: Path) -> None:
+        with pytest.raises(IsADirectoryError):
+            append_record(tmp_path, {"x": 1})
+
+
+class TestReadBehaviour:
     def test_reader_skips_blank_lines(self, tmp_path: Path) -> None:
         result = _result(uuid.uuid4(), "m")
-        append_generation_result(tmp_path, result)
-        path = tmp_path / GENERATION_RESULT_DIR / "m.jsonl"
+        path = tmp_path / "generations.jsonl"
+        append_record(path, result)
         path.write_bytes(path.read_bytes() + b"\n   \n")  # stray blank lines
         assert read_generation_result_file(path) == [result]
 
@@ -136,7 +136,3 @@ class TestReadBehaviour:
         assert read_ranking_task_file(missing) == []
         assert read_ranking_result_file(missing) == []
         assert read_ranking_failure_file(missing) == []
-
-    def test_append_line_rejects_directory(self, tmp_path: Path) -> None:
-        with pytest.raises(IsADirectoryError):
-            _append_line(tmp_path, {"x": 1})
