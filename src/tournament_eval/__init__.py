@@ -8,7 +8,7 @@ grader's hidden assumption.
 import importlib
 from typing import TYPE_CHECKING
 
-from .llm import LLMClient, OpenAICompatibleClient, StructuredResponse
+from .llm import GenerationResponse, LLMClient, OpenAICompatibleClient, StructuredResponse
 from .models import (
     GenerationFailure,
     GenerationFailureDict,
@@ -109,6 +109,7 @@ __all__ = [
     "DefaultRankingTemplate",
     "GenerationFailure",
     "GenerationFailureDict",
+    "GenerationResponse",
     "GenerationResult",
     "GenerationResultDict",
     "GenerationTask",

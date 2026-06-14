@@ -56,7 +56,8 @@ class TestGenerate:
     async def test_returns_content_and_sends_payload(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_chat("bonjour"))
         async with _client(transport) as client:
-            assert await client.generate("hi") == "bonjour"
+            response = await client.generate("hi")
+            assert (response.text, response.reasoning) == ("bonjour", None)
         assert rec.json["model"] == "m"
         assert rec.json["messages"] == [{"role": "user", "content": "hi"}]
         assert rec.json["stream"] is False
@@ -125,7 +126,7 @@ class TestRetries:
         monkeypatch.setattr("tournament_eval.llm.openai_compatible.asyncio.sleep", _noop)
         transport, rec = http_mock((500, {}), (200, _chat("ok")))
         async with _client(transport) as client:
-            assert await client.generate("hi") == "ok"
+            assert (await client.generate("hi")).text == "ok"
         assert rec.calls == 2
 
     async def test_exhausts_and_raises(self, http_mock: _HttpMock, monkeypatch: pytest.MonkeyPatch) -> None:

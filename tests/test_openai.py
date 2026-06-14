@@ -58,7 +58,7 @@ class TestOpenAIClient:
     async def test_generate(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_response("bonjour"))
         client = _client(transport, system_prompt="sys", max_tokens=20)
-        assert await client.generate("hi") == "bonjour"
+        assert (await client.generate("hi")).text == "bonjour"
         assert client.name == "gpt-x"
         assert rec.json["model"] == "gpt-x"
         assert rec.json["input"] == "hi"

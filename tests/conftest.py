@@ -26,7 +26,7 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from tournament_eval import StructuredResponse
+from tournament_eval import GenerationResponse, StructuredResponse
 from tournament_eval.models import GenerationResult, GenerationTask, RankingTask
 
 # --------------------------------------------------------------------------- #
@@ -150,12 +150,12 @@ class MockLLMClient:
     def name(self) -> str:
         return self._name
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         if prompt in self._fail_on:
             raise RuntimeError(f"Mock generate failure: {prompt}")
         if prompt not in self._generate:
             raise RuntimeError(f"No mock response for prompt: {prompt!r}")
-        return self._generate[prompt]
+        return GenerationResponse(text=self._generate[prompt], reasoning=None)
 
     async def generate_structured(self, prompt: str, _schema: dict[str, object]) -> StructuredResponse:
         if prompt in self._fail_on:
@@ -203,6 +203,7 @@ class _MakeGeneration(Protocol):
         author: str = "test-model",
         task_id: uuid.UUID | None = None,
         output: str = "some output",
+        reasoning: str | None = None,
     ) -> GenerationResult: ...
 
 
@@ -230,13 +231,14 @@ def make_generation() -> _MakeGeneration:
         author: str = "test-model",
         task_id: uuid.UUID | None = None,
         output: str = "some output",
+        reasoning: str | None = None,
     ) -> GenerationResult:
         return GenerationResult(
             id=uuid.uuid4(),
             task_id=task_id or uuid.uuid4(),
             generation_prompt="test prompt",
-            raw_response="raw",
             output=output,
+            reasoning=reasoning,
             author=author,
         )
 

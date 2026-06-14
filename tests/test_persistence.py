@@ -42,8 +42,8 @@ def _result(task_id: uuid.UUID, author: str, output: str = "o") -> GenerationRes
         id=uuid.uuid4(),
         task_id=task_id,
         generation_prompt="p",
-        raw_response="r",
         output=output,
+        reasoning=None,
         author=author,
     )
 
@@ -81,8 +81,8 @@ class TestRoundTrip:
             id=uuid.uuid4(),
             task_id=uuid.uuid4(),
             generation_prompt="p",
-            raw_response="r",
             output="o",
+            reasoning="thinking out loud",
             author="org/model:tag",  # unsafe filename chars
             metadata={"latency": 1.5, "tokens": 12},
         )

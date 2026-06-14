@@ -187,7 +187,7 @@ How a ranking model is prompted, constrained, and validated lives in a `RankingT
 - `schema` — the JSON schema its response is constrained to
 - `parse(data, valid_aliases)` — validation into a `ParsedRanking`
 
-`rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common customization — showing the ranker the *original* prompt the models answered — is a one-method override, with the context derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, and `.metadata` are all in reach):
+`rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). The common customization — showing the ranker the *original* prompt the models answered — is a one-method override, with the context derived from the candidates you already have (each is passed as its full `GenerationResult`, so `.generation_prompt`, `.output`, `.reasoning`, and `.metadata` are all in reach):
 
 ```python
 from collections.abc import Mapping

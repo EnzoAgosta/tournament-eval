@@ -192,6 +192,14 @@ class TestOpenAIChatFamilies:
         body = {"choices": [{"message": {"content": "Bonjour"}}]}
         assert _family(GptOssBedrockClient)._extract_text(body) == "Bonjour"
 
+    def test_gptoss_captures_reasoning(self) -> None:
+        body = {"choices": [{"message": {"content": "<reasoning>hmm</reasoning>\nBonjour"}}]}
+        assert _family(GptOssBedrockClient)._extract_reasoning(body) == "hmm"
+
+    def test_gptoss_no_reasoning_is_none(self) -> None:
+        body = {"choices": [{"message": {"content": "Bonjour"}}]}
+        assert _family(GptOssBedrockClient)._extract_reasoning(body) is None
+
 
 class TestBedrockTransport:
     """End-to-end through a real bedrock-runtime client + Stubber (covers _invoke)."""
@@ -200,7 +208,7 @@ class TestBedrockTransport:
         client, stubber = bedrock_stub({"content": [{"type": "text", "text": "bonjour"}]})
         with stubber:
             out = await AnthropicBedrockClient(client, model_id="anthropic.claude").generate("hi")
-        assert out == "bonjour"
+        assert (out.text, out.reasoning) == ("bonjour", None)
         stubber.assert_no_pending_responses()
 
     async def test_generate_structured_round_trip(self, bedrock_stub: Any) -> None:
@@ -213,7 +221,7 @@ class TestBedrockTransport:
         client, stubber = bedrock_stub({"choices": [{"message": {"content": "bonjour"}}]})
         with stubber:
             out = await JambaBedrockClient(client, model_id="ai21.jamba").generate("hi")
-        assert out == "bonjour"
+        assert out.text == "bonjour"
 
     async def test_non_object_response_body_raises(self, bedrock_stub: Any) -> None:
         client, stubber = bedrock_stub([1, 2, 3])  # top-level JSON array

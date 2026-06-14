@@ -16,6 +16,7 @@ from openai.types.responses import Response, ResponseOutputMessage, ResponseOutp
 
 from tournament_eval.llm.base import (
     GenerationConfig,
+    GenerationResponse,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -57,7 +58,7 @@ class OpenAIClient:
                         raise ValueError(f"Model refused to respond: {part.refusal}")
         return response.output_text
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         async with concurrency_guard(self._sem):
             response = await self._client.responses.create(
                 model=self._model_id,
@@ -66,7 +67,9 @@ class OpenAIClient:
                 temperature=self._temperature,
                 max_output_tokens=self._max_tokens,
             )
-        return self._text(response)
+        # Reasoning models expose only a summary, and only when requested via a
+        # reasoning config we don't set yet — so no trace is captured here.
+        return GenerationResponse(text=self._text(response), reasoning=None)
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         async with concurrency_guard(self._sem):

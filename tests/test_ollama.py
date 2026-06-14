@@ -17,11 +17,14 @@ def _client(transport: httpx.MockTransport, **cfg: Any) -> OllamaClient:
     return OllamaClient(sdk, **cfg)
 
 
-def _response(content: str) -> dict[str, Any]:
+def _response(content: str, thinking: str | None = None) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if thinking is not None:
+        message["thinking"] = thinking
     return {
         "model": "llama",
         "created_at": "2024-01-01T00:00:00.000000Z",
-        "message": {"role": "assistant", "content": content},
+        "message": message,
         "done": True,
         "done_reason": "stop",
     }
@@ -31,15 +34,21 @@ class TestOllamaClient:
     async def test_generate(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_response("bonjour"))
         client = _client(transport, system_prompt="sys", temperature=0.5, max_tokens=20, seed=3)
-        assert await client.generate("hi") == "bonjour"
+        response = await client.generate("hi")
+        assert (response.text, response.reasoning) == ("bonjour", None)
         assert client.name == "llama"
         assert rec.json["model"] == "llama"
         assert rec.json["messages"][0] == {"role": "system", "content": "sys"}
         assert rec.json["options"] == {"temperature": 0.5, "num_predict": 20, "seed": 3}
 
+    async def test_captures_thinking_as_reasoning(self, http_mock: _HttpMock) -> None:
+        transport, _ = http_mock(_response("bonjour", thinking="let me think"))
+        response = await _client(transport).generate("hi")
+        assert (response.text, response.reasoning) == ("bonjour", "let me think")
+
     async def test_empty_content_returns_empty_string(self, http_mock: _HttpMock) -> None:
         transport, _ = http_mock(_response(""))
-        assert await _client(transport).generate("hi") == ""
+        assert (await _client(transport).generate("hi")).text == ""
 
     async def test_default_options_only_temperature(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_response("x"))

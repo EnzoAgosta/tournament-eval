@@ -10,7 +10,8 @@ bounds the threads).
 Invoke request/response bodies are **model-specific**, so the abstract
 :class:`BedrockClient` owns the transport once and each family is a thin subclass
 implementing just two formatters — :meth:`~BedrockClient._build_body` and
-:meth:`~BedrockClient._extract_text`.  Built-in families: Anthropic (Claude),
+:meth:`~BedrockClient._extract_text` (plus :meth:`~BedrockClient._extract_reasoning`
+for the rare family that surfaces a trace, e.g. gpt-oss).  Built-in families: Anthropic (Claude),
 Nova, Titan, Llama, Mistral, Cohere (Command R/R+), AI21 Jamba, Writer Palmyra,
 and OpenAI gpt-oss (the last three share an OpenAI chat-completions body shape).
 
@@ -33,6 +34,7 @@ import orjson
 
 from tournament_eval.llm.base import (
     GenerationConfig,
+    GenerationResponse,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -118,6 +120,14 @@ class BedrockClient(abc.ABC):
         """Pull the assistant text out of the family-specific response body."""
         ...
 
+    def _extract_reasoning(self, _response: dict[str, Any]) -> str | None:
+        """Pull the model's reasoning trace from the response, if it has one.
+
+        Defaults to ``None`` — over the Invoke API most families surface no
+        reasoning; a family that does (e.g. gpt-oss) overrides this.
+        """
+        return None
+
     async def _invoke(self, body: dict[str, object]) -> dict[str, Any]:
         def _call() -> Any:
             response = self._client.invoke_model(
@@ -134,9 +144,12 @@ class BedrockClient(abc.ABC):
             raise ValueError("Bedrock response body is not a JSON object")
         return parsed
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         response = await self._invoke(self._build_body(prompt, None))
-        return self._extract_text(response)
+        return GenerationResponse(
+            text=self._extract_text(response),
+            reasoning=self._extract_reasoning(response),
+        )
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         response = await self._invoke(self._build_body(prompt, schema))
@@ -320,10 +333,14 @@ class _OpenAIChatBedrockClient(BedrockClient):
             body[self._MAX_TOKENS_KEY] = self._max_tokens
         return body
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _content(self, response: dict[str, Any]) -> str:
+        """The raw ``choices[0].message.content`` string, before any cleaning."""
         choice = _list_field(response, "choices")[0]
         message = choice.get("message") if isinstance(choice, dict) else None
-        return self._clean(_str_field(message, "content"))
+        return _str_field(message, "content")
+
+    def _extract_text(self, response: dict[str, Any]) -> str:
+        return self._clean(self._content(response))
 
     def _clean(self, text: str) -> str:
         """Post-process the raw content; identity by default."""
@@ -343,8 +360,8 @@ class GptOssBedrockClient(_OpenAIChatBedrockClient):
 
     Two quirks vs the plain chat shape: the token cap is ``max_completion_tokens``,
     and over Invoke the model inlines its reasoning in ``<reasoning>…</reasoning>``
-    before the answer, so :meth:`_clean` strips everything up to and including the
-    closing tag.
+    before the answer.  :meth:`_clean` strips that prefix off the answer, while
+    :meth:`_extract_reasoning` keeps the trace from inside the tags.
     """
 
     _MAX_TOKENS_KEY = "max_completion_tokens"
@@ -352,3 +369,10 @@ class GptOssBedrockClient(_OpenAIChatBedrockClient):
     def _clean(self, text: str) -> str:
         _, separator, answer = text.partition("</reasoning>")
         return answer.lstrip() if separator else text
+
+    def _extract_reasoning(self, response: dict[str, Any]) -> str | None:
+        head, separator, _ = self._content(response).partition("</reasoning>")
+        if not separator:
+            return None
+        reasoning = head.partition("<reasoning>")[2].strip()
+        return reasoning or None

@@ -19,6 +19,7 @@ import orjson
 
 from tournament_eval.llm.base import (
     GenerationConfig,
+    GenerationResponse,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -54,7 +55,7 @@ class OpenAICompatibleClient:
     with ``async with`` before calling it directly::
 
         async with OpenAICompatibleClient(model_id="m", base_url="http://...", api_key="k") as client:
-            text = await client.generate("hello")
+            text = (await client.generate("hello")).text
 
     Handed to :func:`~tournament_eval.orchestration.generate_all` /
     :func:`~tournament_eval.orchestration.rank_all`, the lifecycle is managed for you.
@@ -182,11 +183,12 @@ class OpenAICompatibleClient:
             raise ValueError("OpenAI response 'content' is not a string")
         return content
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         headers = self._build_headers()
         body = self._build_payload(prompt)
         response = await self._make_request(headers, body)
-        return self._extract_text(response)
+        # The plain /chat/completions contract has no standard reasoning field.
+        return GenerationResponse(text=self._extract_text(response), reasoning=None)
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         headers = self._build_headers()

@@ -11,6 +11,7 @@ import BedrockClient``) or import the submodule directly.
 """
 
 from tournament_eval.llm.base import (
+    GenerationResponse,
     LLMClient,
     StructuredResponse,
     concurrency_guard,
@@ -19,6 +20,7 @@ from tournament_eval.llm.base import (
 from tournament_eval.llm.openai_compatible import OpenAICompatibleClient
 
 __all__ = [
+    "GenerationResponse",
     "LLMClient",
     "OpenAICompatibleClient",
     "StructuredResponse",

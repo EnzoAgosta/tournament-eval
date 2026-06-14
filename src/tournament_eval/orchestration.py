@@ -109,13 +109,13 @@ async def generate_one(
     """
     result: GenerationResult | GenerationFailure
     try:
-        raw = await client.generate(task.generation_prompt)
+        response = await client.generate(task.generation_prompt)
         result = GenerationResult(
             id=uuid.uuid4(),
             task_id=task.id,
             generation_prompt=task.generation_prompt,
-            raw_response=raw,
-            output=raw,  # no cleaning applied by default
+            output=response.text,
+            reasoning=response.reasoning,
             author=client.name,
         )
     except Exception as err:
@@ -173,10 +173,11 @@ async def generate_all(
     tuple[list[GenerationResult], list[GenerationFailure]]
         The results and failures for the pairs run *this call* (i.e. excluding
         anything in ``skip``).  One :class:`GenerationResult` per successful
-        (task, client) pair — its ``output`` field mirrors ``raw_response``, no
-        cleaning applied — and one :class:`GenerationFailure` per pair whose
-        client raised.  When ``output`` is set, the same records are also
-        streamed to the run directory.
+        (task, client) pair — its ``output`` is the model's answer verbatim (no
+        cleaning) and ``reasoning`` carries the trace when the provider surfaced
+        one — and one :class:`GenerationFailure` per pair whose client raised.
+        When ``output`` is set, the same records are also streamed to the run
+        directory.
     """
     skip_set = set(skip)
     async with contextlib.AsyncExitStack() as stack:

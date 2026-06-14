@@ -20,6 +20,22 @@ from typing import NotRequired, Protocol, Required, TypedDict
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class GenerationResponse:
+    """Wrapper returned by :meth:`LLMClient.generate`.
+
+    Pairs the answer text with the model's reasoning trace, when the provider
+    surfaces one.  ``reasoning`` is ``None`` for non-reasoning models and for
+    providers that only expose the trace behind extra request config — see each
+    client for what it captures.
+    """
+
+    text: str
+    """The model's answer text."""
+    reasoning: str | None
+    """The model's reasoning trace, if the provider surfaced one; ``None`` otherwise."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class StructuredResponse:
     """Wrapper returned by :meth:`LLMClient.generate_structured`.
 
@@ -63,8 +79,8 @@ class LLMClient(Protocol):
     name: str
     """Model identifier, used as the ``author`` on every result it produces."""
 
-    async def generate(self, prompt: str) -> str:
-        """Send a plain-text prompt and return the response text."""
+    async def generate(self, prompt: str) -> GenerationResponse:
+        """Send a plain-text prompt and return the answer plus any reasoning trace."""
         ...
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:

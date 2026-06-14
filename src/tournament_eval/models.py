@@ -73,8 +73,8 @@ class GenerationResultDict(TypedDict):
     id: str
     task_id: str
     generation_prompt: str
-    raw_response: str
     output: str
+    reasoning: str | None
     author: str
     metadata: dict[str, object]
 
@@ -89,10 +89,10 @@ class GenerationResult:
     """The :class:`GenerationTask` that was used to produce this generation."""
     generation_prompt: str
     """The exact prompt string sent to the model, verbatim."""
-    raw_response: str
-    """The direct, unmodified response returned by the LLM."""
     output: str
-    """The cleaned, ready-to-use text (e.g. stripped of markdown fences)."""
+    """The model's answer text, as returned (no cleaning applied)."""
+    reasoning: str | None
+    """The model's reasoning trace, if the provider surfaced one; ``None`` otherwise."""
     author: str
     """The model identifier that produced this output (e.g. ``"gpt-4o"``)."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
@@ -105,8 +105,8 @@ class GenerationResult:
             id=uuid.UUID(data["id"]),
             task_id=uuid.UUID(data["task_id"]),
             generation_prompt=data["generation_prompt"],
-            raw_response=data["raw_response"],
             output=data["output"],
+            reasoning=data["reasoning"],
             author=data["author"],
             metadata=data["metadata"],
         )

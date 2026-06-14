@@ -35,14 +35,16 @@ def test_generation_result_from_json() -> None:
             "id": str(rid),
             "task_id": str(task_id),
             "generation_prompt": "p",
-            "raw_response": "r",
             "output": "o",
+            "reasoning": "thought about it",
             "author": "gpt",
             "metadata": {"latency": 1.5},
         }
     )
     assert result.id == rid
     assert result.task_id == task_id
+    assert result.output == "o"
+    assert result.reasoning == "thought about it"
     assert result.metadata == {"latency": 1.5}
 
 

@@ -22,6 +22,7 @@ from anthropic.types import Message, MessageParam, TextBlock
 
 from tournament_eval.llm.base import (
     GenerationConfig,
+    GenerationResponse,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -65,7 +66,7 @@ class AnthropicClient:
                 return block.text
         raise ValueError("Anthropic response had no text block")
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         async with concurrency_guard(self._sem):
             message = await self._client.messages.create(
                 model=self._model_id,
@@ -74,7 +75,9 @@ class AnthropicClient:
                 system=self._system,
                 messages=[MessageParam(role="user", content=prompt)],
             )
-        return self._text(message)
+        # Extended thinking is opt-in (a thinking config we don't set yet), so no
+        # ThinkingBlock is returned to capture here.
+        return GenerationResponse(text=self._text(message), reasoning=None)
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         async with concurrency_guard(self._sem):

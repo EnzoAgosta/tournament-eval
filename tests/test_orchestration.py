@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
-from tournament_eval import StructuredResponse
+from tournament_eval import GenerationResponse, StructuredResponse
 from tournament_eval.models import (
     GenerationFailure,
     GenerationResult,
@@ -57,10 +57,10 @@ class _ManagedClient:
     async def __aexit__(self, *_exc: object) -> None:
         self.closed = True
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         assert self.opened, "used before being opened"
         assert not self.closed, "used after being closed"
-        return f"{self._name}:{prompt}"
+        return GenerationResponse(text=f"{self._name}:{prompt}", reasoning=None)
 
     async def generate_structured(self, _prompt: str, _schema: dict[str, object]) -> StructuredResponse:
         raise AssertionError("not exercised")
@@ -78,7 +78,7 @@ class _RankingClient:
     def name(self) -> str:
         return self._name
 
-    async def generate(self, _prompt: str) -> str:
+    async def generate(self, _prompt: str) -> GenerationResponse:
         raise AssertionError("not exercised")
 
     async def generate_structured(self, _prompt: str, _schema: dict[str, object]) -> StructuredResponse:
@@ -96,7 +96,21 @@ class TestGenerateOne:
     async def test_success(self, make_client: Any, make_task: _MakeTask) -> None:
         result = await generate_one(make_task("p"), make_client("a", generate_responses={"p": "out"}))
         assert isinstance(result, GenerationResult)
-        assert (result.author, result.output) == ("a", "out")
+        assert (result.author, result.output, result.reasoning) == ("a", "out", None)
+
+    async def test_captures_reasoning_from_response(self, make_task: _MakeTask) -> None:
+        class _Reasoner:
+            name = "r"
+
+            async def generate(self, _prompt: str) -> GenerationResponse:
+                return GenerationResponse(text="answer", reasoning="because")
+
+            async def generate_structured(self, _p: str, _s: dict[str, object]) -> StructuredResponse:
+                raise AssertionError("not exercised")
+
+        result = await generate_one(make_task("p"), _Reasoner())
+        assert isinstance(result, GenerationResult)
+        assert (result.output, result.reasoning) == ("answer", "because")
 
     async def test_failure_is_returned_not_raised(self, make_client: Any, make_task: _MakeTask) -> None:
         result = await generate_one(make_task("p"), make_client("a", fail_on={"p"}))

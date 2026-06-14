@@ -17,6 +17,7 @@ from ollama import AsyncClient
 
 from tournament_eval.llm.base import (
     GenerationConfig,
+    GenerationResponse,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -68,14 +69,16 @@ class OllamaClient:
             options["seed"] = self._seed
         return options
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> GenerationResponse:
         async with concurrency_guard(self._sem):
             response = await self._client.chat(
                 model=self._model_id,
                 messages=self._messages(prompt),
                 options=self._options(),
             )
-        return response.message.content or ""
+        # `thinking` is populated only when the caller enabled think mode (a knob
+        # we don't expose yet); read it opportunistically so it flows when it does.
+        return GenerationResponse(text=response.message.content or "", reasoning=response.message.thinking)
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         async with concurrency_guard(self._sem):

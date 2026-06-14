@@ -38,7 +38,7 @@ class TestAnthropicClient:
     async def test_generate(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_text("bonjour"))
         client = _client(transport, system_prompt="sys", max_tokens=10, temperature=0.5)
-        assert await client.generate("hi") == "bonjour"
+        assert (await client.generate("hi")).text == "bonjour"
         assert client.name == "claude"
         assert rec.json["model"] == "claude"
         assert rec.json["max_tokens"] == 10
