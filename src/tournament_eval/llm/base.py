@@ -72,6 +72,20 @@ class LLMClient(Protocol):
         ...
 
 
+def resolve_semaphore(
+    semaphore: asyncio.Semaphore | None,
+    max_concurrency: int | None,
+) -> asyncio.Semaphore | None:
+    """Pick a client's throttle: an explicit ``semaphore`` wins, else build one
+    from ``max_concurrency``, else ``None`` (unbounded).
+
+    The companion to :func:`concurrency_guard`: clients don't share a base class,
+    so this gives each constructor the same "shared semaphore, or a private one
+    sized to my cap, or nothing" resolution without inheritance.
+    """
+    return semaphore or (asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None)
+
+
 def concurrency_guard(
     semaphore: asyncio.Semaphore | None,
 ) -> AbstractAsyncContextManager[None]:

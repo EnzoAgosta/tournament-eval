@@ -18,6 +18,7 @@ from tournament_eval.llm.base import (
     GenerationConfig,
     StructuredResponse,
     concurrency_guard,
+    resolve_semaphore,
 )
 
 
@@ -37,10 +38,7 @@ class OpenAIClient:
         self._temperature = kwargs.get("temperature", 1.0)
         self._max_tokens = kwargs.get("max_tokens")
         self._system_prompt = kwargs.get("system_prompt")
-        self._max_concurrency = kwargs.get("max_concurrency")
-        self._sem: asyncio.Semaphore | None = semaphore or (
-            asyncio.Semaphore(self._max_concurrency) if self._max_concurrency is not None else None
-        )
+        self._sem = resolve_semaphore(semaphore, kwargs.get("max_concurrency"))
 
     @property
     def name(self) -> str:
