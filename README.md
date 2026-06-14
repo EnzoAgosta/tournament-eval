@@ -81,14 +81,14 @@ Requires Python 3.14+. This example ranks two local models served by [Ollama](ht
 
 ```python
 import asyncio
-import uuid
 
 from tournament_eval import (
-    GenerationTask,
     OpenAICompatibleClient,
     build_ranking_tasks,
     generate_all,
+    generation_tasks,
     rank_all,
+    ranking_by_author,
 )
 
 
@@ -101,12 +101,12 @@ async def main() -> None:
         OpenAICompatibleClient(model_id="gemma3", base_url="http://localhost:11434/v1", api_key="local"),
     ]
 
-    tasks = [
-        GenerationTask(
-            id=uuid.uuid4(),
-            generation_prompt="Translate into French: The quick brown fox jumps over the lazy dog.",
-        ),
-    ]
+    # One GenerationTask per sentence, sharing a base prompt. (Or pull the lines
+    # from a text file with generation_tasks_from_file(base_prompt, "sentences.txt").)
+    tasks = generation_tasks(
+        "Translate into French. Output only the translation, no notes.",
+        ["The quick brown fox jumps over the lazy dog.", "She sells seashells by the sea shore."],
+    )
 
     # 1. Every model produces an output for every task.
     generations, gen_failures = await generate_all(tasks, clients)
@@ -119,8 +119,9 @@ async def main() -> None:
     # 3. Every judge ranks the whole field. Same clients here = the circular case.
     rankings, rank_failures = await rank_all(ranking_tasks, generations, clients)
 
+    # Read each judge's verdict back as author names, best first.
     for r in rankings:
-        print(f"{r.author} ranked {r.raw_model_ranking}")
+        print(f"{r.author} ranked: {ranking_by_author(r, generations)}")
         if r.reasoning:
             print(f"  reasoning: {r.reasoning[:120]}...")
 
@@ -268,6 +269,8 @@ Reading a run back is per-file and typed — `read_generation_result_file`, `rea
 ## Scope
 
 **Aggregation is intentionally out of scope.** The framework hands you the rankings and the reasoning; collapsing them into a verdict — Borda, Condorcet, Bradley–Terry, Elo over the pairwise implications, whatever fits — is a real methodological decision, not a detail to bury in a library. It's all ordinal-ranking math over data you already have on disk, so it's yours for now (and may arrive later as an opt-in convenience).
+
+Resolving the data is fair game, though — `ranking_by_author(ranking_result, generations)` turns one judge's id-based ranking back into author names (best first). That's de-anonymization for analysis, the line before aggregation begins.
 
 ## Tested and typed
 
