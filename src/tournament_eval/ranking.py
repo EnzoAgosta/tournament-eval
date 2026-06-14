@@ -3,7 +3,7 @@
 The :class:`RankingTemplate` contract bundles the three pieces that must agree
 with each other — the prompt, the response schema, and the validation — plus the
 built-in :class:`DefaultRankingTemplate` (a strict total order, no ties) and the
-:class:`LetterGenerator` used to anonymise candidates behind aliases.
+:func:`alias_for_index` helper used to anonymise candidates behind aliases.
 
 This module depends only on :mod:`tournament_eval.models` for the data it ranks
 (:class:`~tournament_eval.models.RankingTask` /
@@ -19,20 +19,18 @@ from typing import ClassVar
 from tournament_eval.models import GenerationResult, RankingTask
 
 
-class LetterGenerator:
-    """Simple generator for letters, Excel-style: A, B, C, ..., AA, AB, AC, ..."""
+def alias_for_index(index: int) -> str:
+    """Map a 0-based index to an Excel-style alias: 0->A, 25->Z, 26->AA, 27->AB, ...
 
-    def __init__(self) -> None:
-        self.n = 0
-
-    def get_next_letter(self) -> str:
-        self.n += 1
-        result = ""
-        temp = self.n
-        while temp > 0:
-            temp, remainder = divmod(temp - 1, 26)
-            result = chr(65 + remainder) + result
-        return result
+    Used to anonymise candidates behind position-independent labels; the caller
+    enumerates its candidates and asks for one alias per index.
+    """
+    result = ""
+    n = index + 1
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(ord("A") + remainder) + result
+    return result
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

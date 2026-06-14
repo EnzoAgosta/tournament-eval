@@ -1,4 +1,4 @@
-"""Tests for the ranking strategy: LetterGenerator, DefaultRankingTemplate, custom templates."""
+"""Tests for the ranking strategy: alias_for_index, DefaultRankingTemplate, custom templates."""
 
 from collections.abc import Mapping
 
@@ -6,21 +6,17 @@ import pytest
 
 from tests.conftest import _MakeGeneration, _MakeRankingTask
 from tournament_eval.models import GenerationResult, RankingTask
-from tournament_eval.ranking import DefaultRankingTemplate, LetterGenerator
+from tournament_eval.ranking import DefaultRankingTemplate, alias_for_index
 
 
-def test_letter_generator_sequence() -> None:
-    gen = LetterGenerator()
-    assert [gen.get_next_letter() for _ in range(3)] == ["A", "B", "C"]
+def test_alias_for_index_sequence() -> None:
+    assert [alias_for_index(i) for i in range(3)] == ["A", "B", "C"]
 
 
-def test_letter_generator_wraps_past_z() -> None:
-    gen = LetterGenerator()
-    for _ in range(25):
-        gen.get_next_letter()
-    assert gen.get_next_letter() == "Z"
-    assert gen.get_next_letter() == "AA"
-    assert gen.get_next_letter() == "AB"
+def test_alias_for_index_wraps_past_z() -> None:
+    assert alias_for_index(25) == "Z"
+    assert alias_for_index(26) == "AA"
+    assert alias_for_index(27) == "AB"
 
 
 def test_schema_constrains_ranking() -> None:

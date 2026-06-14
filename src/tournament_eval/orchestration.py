@@ -48,8 +48,8 @@ from tournament_eval.models import (
 )
 from tournament_eval.ranking import (
     DefaultRankingTemplate,
-    LetterGenerator,
     RankingTemplate,
+    alias_for_index,
 )
 
 _DEFAULT_TEMPLATE: RankingTemplate = DefaultRankingTemplate()
@@ -235,8 +235,7 @@ def build_ranking_task(
     rng = random.Random(random_seed)
     rng.shuffle(shuffled)
 
-    letter_gen = LetterGenerator()
-    alias_map: dict[str, uuid.UUID] = {letter_gen.get_next_letter(): result.id for result in shuffled}
+    alias_map: dict[str, uuid.UUID] = {alias_for_index(i): result.id for i, result in enumerate(shuffled)}
     ranking_task = RankingTask(
         id=uuid.uuid4(),
         ranking_prompt=ranking_prompt,
