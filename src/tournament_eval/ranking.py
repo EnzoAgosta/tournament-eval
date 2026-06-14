@@ -118,9 +118,6 @@ class DefaultRankingTemplate(RankingTemplate):
     verbose reasoner can look more thorough than it is, biasing the panel.
     """
 
-    def __init__(self, *, include_reasoning: bool = False) -> None:
-        self.include_reasoning = include_reasoning
-
     _SCHEMA: ClassVar[dict[str, object]] = {
         "type": "object",
         "properties": {
@@ -139,6 +136,9 @@ class DefaultRankingTemplate(RankingTemplate):
         "required": ["ranking"],
         "additionalProperties": False,
     }
+
+    def __init__(self, *, include_reasoning: bool = False) -> None:
+        self.include_reasoning = include_reasoning
 
     def render(
         self,

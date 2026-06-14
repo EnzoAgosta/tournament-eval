@@ -71,13 +71,6 @@ from tournament_eval.ranking import (
 _DEFAULT_TEMPLATE: RankingTemplate = DefaultRankingTemplate()
 
 
-def _build_generation_lookup(
-    generation_results: list[GenerationResult],
-) -> dict[uuid.UUID, GenerationResult]:
-    """Index GenerationResults by their ID for O(1) lookup."""
-    return {result.id: result for result in generation_results}
-
-
 def _completed_pairs[T](
     records: list[T],
     *,
@@ -484,7 +477,7 @@ async def rank_all(
         returned a malformed ranking).
     """
     clients = list(clients)
-    generation_lookup = _build_generation_lookup(generation_results)
+    generation_lookup = {result.id: result for result in generation_results}
     loaded = persistence.read_ranking_result_file(results_path) if results_path is not None else []
     done = _completed_pairs(
         loaded,
