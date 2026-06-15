@@ -20,10 +20,21 @@ import orjson
 from tournament_eval.llm.base import (
     GenerationConfig,
     GenerationResponse,
+    ReasoningEffort,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
 )
+
+# The chat-completions ``reasoning_effort`` field tops out at "high", so the
+# Anthropic-only levels map down to it.
+_REASONING_EFFORT: dict[ReasoningEffort, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+}
 
 
 class OpenAICompatibleClientConfig(GenerationConfig):
@@ -77,6 +88,7 @@ class OpenAICompatibleClient:
         self._name = kwargs.get("name")
         self._timeout = kwargs.get("timeout", 300.0)
         self._seed = kwargs.get("seed")
+        self._reasoning_effort = kwargs.get("reasoning_effort")
         # Set by tests to inject a mock transport; not a public API.
         self._transport: httpx.AsyncBaseTransport | None = None
         self._http_client: httpx.AsyncClient | None = None
@@ -135,6 +147,8 @@ class OpenAICompatibleClient:
             payload["max_tokens"] = self._max_tokens
         if self._seed is not None:
             payload["seed"] = self._seed
+        if self._reasoning_effort is not None:
+            payload["reasoning_effort"] = _REASONING_EFFORT[self._reasoning_effort]
         if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -171,7 +185,7 @@ class OpenAICompatibleClient:
 
         raise RuntimeError("retry loop ended without a request")  # only reachable if retry_count < 1
 
-    def _extract_text(self, body: dict[str, object]) -> str:
+    def _message(self, body: dict[str, object]) -> dict[str, object]:
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ValueError("OpenAI response missing a non-empty 'choices' list")
@@ -181,6 +195,9 @@ class OpenAICompatibleClient:
         message = first.get("message")
         if not isinstance(message, dict):
             raise ValueError("OpenAI response missing 'message'")
+        return message
+
+    def _extract_text(self, message: dict[str, object]) -> str:
         refusal = message.get("refusal")
         if isinstance(refusal, str):
             raise ValueError(f"Model refused to respond: {refusal}")
@@ -189,18 +206,24 @@ class OpenAICompatibleClient:
             raise ValueError("OpenAI response 'content' is not a string")
         return content
 
+    def _extract_reasoning(self, message: dict[str, object]) -> str | None:
+        # Not part of the /chat/completions contract, but reasoning-capable
+        # OpenAI-compatible servers (vLLM, SGLang, ...) return the trace in
+        # ``message.reasoning_content``. Read it when present; best-effort.
+        reasoning = message.get("reasoning_content")
+        return reasoning if isinstance(reasoning, str) else None
+
     async def generate(self, prompt: str) -> GenerationResponse:
         headers = self._build_headers()
         body = self._build_payload(prompt)
-        response = await self._make_request(headers, body)
-        # The plain /chat/completions contract has no standard reasoning field.
-        return GenerationResponse(text=self._extract_text(response), reasoning=None)
+        message = self._message(await self._make_request(headers, body))
+        return GenerationResponse(text=self._extract_text(message), reasoning=self._extract_reasoning(message))
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         headers = self._build_headers()
         body = self._build_payload(prompt, schema=schema)
-        response = await self._make_request(headers, body)
-        raw = self._extract_text(response)
+        message = self._message(await self._make_request(headers, body))
+        raw = self._extract_text(message)
         parsed = orjson.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")

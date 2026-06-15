@@ -18,6 +18,7 @@ from ollama import AsyncClient
 from tournament_eval.llm.base import (
     GenerationConfig,
     GenerationResponse,
+    ReasoningEffort,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
@@ -48,11 +49,18 @@ class OllamaClient:
         self._max_tokens = kwargs.get("max_tokens")
         self._system_prompt = kwargs.get("system_prompt")
         self._seed = kwargs.get("seed")
+        self._reasoning_effort: ReasoningEffort | None = kwargs.get("reasoning_effort")
         self._sem = resolve_semaphore(semaphore, kwargs.get("max_concurrency"))
 
     @property
     def name(self) -> str:
         return self._name or self._model_id
+
+    @property
+    def _think(self) -> bool:
+        # Ollama's think mode is on/off; it has no effort dial, so any level just
+        # enables it. With it on, the trace lands on response.message.thinking.
+        return self._reasoning_effort is not None
 
     def _messages(self, prompt: str) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
@@ -75,9 +83,8 @@ class OllamaClient:
                 model=self._model_id,
                 messages=self._messages(prompt),
                 options=self._options(),
+                think=self._think,
             )
-        # `thinking` is populated only when the caller enabled think mode (a knob
-        # we don't expose yet); read it opportunistically so it flows when it does.
         return GenerationResponse(text=response.message.content or "", reasoning=response.message.thinking)
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
@@ -87,6 +94,7 @@ class OllamaClient:
                 messages=self._messages(prompt),
                 options=self._options(),
                 format=schema,
+                think=self._think,
             )
         raw = response.message.content or ""
         parsed = orjson.loads(raw)

@@ -61,6 +61,17 @@ class TestOllamaClient:
         assert response.data == {"x": 1}
         assert rec.json["format"] == {"type": "object"}
 
+    async def test_reasoning_effort_enables_think(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_response("x", thinking="hmm"))
+        response = await _client(transport, reasoning_effort="low").generate("hi")
+        assert response.reasoning == "hmm"
+        assert rec.json["think"] is True
+
+    async def test_think_off_when_reasoning_unset(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_response("x"))
+        await _client(transport).generate("hi")
+        assert rec.json["think"] is False
+
     async def test_structured_non_object_raises(self, http_mock: _HttpMock) -> None:
         transport, _ = http_mock(_response("[1]"))
         with pytest.raises(ValueError, match="Expected JSON object"):

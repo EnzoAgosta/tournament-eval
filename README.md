@@ -162,7 +162,7 @@ claude_bedrock = AnthropicBedrockClient(
 )
 ```
 
-All clients share the same generation config — `model_id`, optional `name` (the label used as `author`), `temperature`, `max_tokens`, `system_prompt`, `max_concurrency`. A model with no reliable structured output (most Bedrock families over the Invoke API fall back to best-effort prompt-injection) makes a fine *contestant* even if it's a flaky *judge* — which is exactly why the two roles are separate lists.
+All clients share the same generation config — `model_id`, optional `name` (the label used as `author`), `temperature`, `max_tokens`, `system_prompt`, `max_concurrency`, `reasoning_effort`. `reasoning_effort` (`low`/`medium`/`high`/`xhigh`/`max`) is the provider-agnostic reasoning dial: each client maps it onto its backend (Anthropic adaptive thinking + effort, OpenAI Responses reasoning effort, Ollama think mode, the OpenAI-compatible `reasoning_effort` field — best-effort), and turning it on is what populates the captured `reasoning` trace. `xhigh`/`max` are Anthropic's full range; other backends clamp down to their ceiling. A model with no reliable structured output (most Bedrock families over the Invoke API fall back to best-effort prompt-injection) makes a fine *contestant* even if it's a flaky *judge* — which is exactly why the two roles are separate lists.
 
 Adding a provider is implementing the three-method Protocol — no framework surgery.
 

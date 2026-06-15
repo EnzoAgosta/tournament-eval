@@ -16,7 +16,15 @@ import asyncio
 import contextlib
 import dataclasses
 from contextlib import AbstractAsyncContextManager
-from typing import NotRequired, Protocol, Required, TypedDict
+from typing import Literal, NotRequired, Protocol, Required, TypedDict
+
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
+"""Reasoning/thinking depth, ordered least to most.
+
+``xhigh`` and ``max`` are Anthropic-only; clients backed by a provider that tops
+out lower map them down to their highest supported level (OpenAI to ``xhigh``,
+the OpenAI-compatible ``reasoning_effort`` to ``high``) — see each client.
+"""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -71,6 +79,14 @@ class GenerationConfig(TypedDict):
     """Optional system-level prompt."""
     max_concurrency: NotRequired[int]
     """Max in-flight requests for this client; unbounded when unset."""
+    reasoning_effort: NotRequired[ReasoningEffort]
+    """Reasoning/thinking depth, when the model supports it.  Unset leaves the
+    provider default (reasoning off for most).  Each client maps it onto its
+    provider's native control — Anthropic adaptive thinking + ``output_config``
+    effort, OpenAI Responses ``reasoning.effort``, Ollama think mode, the
+    OpenAI-compatible ``reasoning_effort`` field (best-effort).  Turning it on is
+    also what makes :attr:`GenerationResponse.reasoning` populate for those
+    clients that can return a trace."""
 
 
 class LLMClient(Protocol):

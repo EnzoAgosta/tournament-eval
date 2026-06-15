@@ -82,6 +82,20 @@ class TestGenerate:
             await client.generate("hi")
         assert "max_tokens" not in rec.json
         assert "seed" not in rec.json
+        assert "reasoning_effort" not in rec.json
+
+    async def test_reasoning_effort_sent_clamped(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_chat("x"))
+        async with _client(transport, reasoning_effort="max") as client:
+            await client.generate("hi")
+        assert rec.json["reasoning_effort"] == "high"  # xhigh/max clamp to high
+
+    async def test_reasoning_content_captured(self, http_mock: _HttpMock) -> None:
+        body = {"choices": [{"message": {"content": "ok", "reasoning_content": "steps"}}]}
+        transport, _ = http_mock(body)
+        async with _client(transport) as client:
+            response = await client.generate("hi")
+        assert (response.text, response.reasoning) == ("ok", "steps")
 
 
 class TestGenerateStructured:

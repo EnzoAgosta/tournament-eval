@@ -34,6 +34,15 @@ def _text(text: str) -> dict[str, Any]:
     return _message([{"type": "text", "text": text}])
 
 
+def _thinking(text: str, reasoning: str) -> dict[str, Any]:
+    return _message(
+        [
+            {"type": "thinking", "thinking": reasoning, "signature": "sig"},
+            {"type": "text", "text": text},
+        ]
+    )
+
+
 class TestAnthropicClient:
     async def test_generate(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_text("bonjour"))
@@ -79,6 +88,30 @@ class TestAnthropicClient:
         response = await client.generate_structured("hi", {"type": "object"})
         assert response.data == {"x": 1}
         assert rec.json["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}
+
+    async def test_reasoning_effort_sends_thinking_and_effort(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_thinking("answer", "because"))
+        client = _client(transport, reasoning_effort="high")
+        response = await client.generate("hi")
+        assert (response.text, response.reasoning) == ("answer", "because")
+        assert rec.json["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert rec.json["output_config"] == {"effort": "high"}
+
+    async def test_reasoning_unset_omits_thinking_and_output_config(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_text("x"))
+        await _client(transport).generate("hi")
+        assert "thinking" not in rec.json
+        assert "output_config" not in rec.json
+
+    async def test_structured_merges_effort_into_output_config(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_text('{"x": 1}'))
+        client = _client(transport, reasoning_effort="max")
+        await client.generate_structured("hi", {"type": "object"})
+        assert rec.json["output_config"] == {
+            "format": {"type": "json_schema", "schema": {"type": "object"}},
+            "effort": "max",
+        }
+        assert rec.json["thinking"] == {"type": "adaptive", "display": "summarized"}
 
     async def test_structured_non_object_raises(self, http_mock: _HttpMock) -> None:
         transport, _ = http_mock(_text("[1]"))

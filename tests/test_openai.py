@@ -54,6 +54,14 @@ def _refusal() -> dict[str, Any]:
     return body
 
 
+def _with_reasoning(text: str, summary: str) -> dict[str, Any]:
+    body = _response(text)
+    body["output"].insert(
+        0, {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": summary}]}
+    )
+    return body
+
+
 class TestOpenAIClient:
     async def test_generate(self, http_mock: _HttpMock) -> None:
         transport, rec = http_mock(_response("bonjour"))
@@ -90,3 +98,17 @@ class TestOpenAIClient:
         client = _client(transport)
         with pytest.raises(ValueError, match="Expected JSON object"):
             await client.generate_structured("hi", {})
+
+    async def test_reasoning_effort_sends_param_and_captures_summary(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_with_reasoning("answer", "thinking hard"))
+        client = _client(transport, reasoning_effort="max")
+        response = await client.generate("hi")
+        assert (response.text, response.reasoning) == ("answer", "thinking hard")
+        assert rec.json["reasoning"] == {"effort": "xhigh", "summary": "auto"}  # max clamps to xhigh
+
+    async def test_reasoning_unset_sends_null(self, http_mock: _HttpMock) -> None:
+        # Like instructions / max_output_tokens, the SDK serializes the unset
+        # reasoning config as an explicit null rather than omitting it.
+        transport, rec = http_mock(_response("x"))
+        await _client(transport).generate("hi")
+        assert rec.json["reasoning"] is None
