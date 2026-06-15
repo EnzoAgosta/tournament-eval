@@ -137,6 +137,58 @@ class TestRetries:
                 await client.generate("hi")
         assert rec.calls == 2
 
+    @pytest.mark.parametrize("status", [400, 401, 404, 422])
+    async def test_client_error_not_retried(
+        self, http_mock: _HttpMock, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        monkeypatch.setattr("tournament_eval.llm.openai_compatible.asyncio.sleep", _noop)
+        transport, rec = http_mock((status, {}))
+        async with _client(transport) as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.generate("hi")
+        assert rec.calls == 1
+
+    async def test_rate_limit_is_retried(self, http_mock: _HttpMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tournament_eval.llm.openai_compatible.asyncio.sleep", _noop)
+        transport, rec = http_mock((429, {}), (200, _chat("ok")))
+        async with _client(transport) as client:
+            assert (await client.generate("hi")).text == "ok"
+        assert rec.calls == 2
+
+    async def test_transport_error_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tournament_eval.llm.openai_compatible.asyncio.sleep", _noop)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("boom", request=request)
+            return httpx.Response(200, json=_chat("ok"))
+
+        async with _client(httpx.MockTransport(handler)) as client:
+            assert (await client.generate("hi")).text == "ok"
+        assert calls["n"] == 2
+
+    async def test_zero_retry_count_makes_no_request(self, http_mock: _HttpMock) -> None:
+        transport, rec = http_mock(_chat("ok"))
+        async with _client(transport, retry_count=0) as client:
+            with pytest.raises(RuntimeError, match="without a request"):
+                await client.generate("hi")
+        assert rec.calls == 0
+
+    async def test_parse_error_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tournament_eval.llm.openai_compatible.asyncio.sleep", _noop)
+        calls = {"n": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(200, content=b"not json")
+
+        async with _client(httpx.MockTransport(handler)) as client:
+            with pytest.raises(Exception):  # noqa: B017,PT011 — JSON decode error is non-retryable
+                await client.generate("hi")
+        assert calls["n"] == 1
+
 
 class TestLifecycleAndConcurrency:
     async def test_generate_outside_context_raises(self) -> None:

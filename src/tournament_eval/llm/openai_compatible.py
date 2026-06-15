@@ -149,7 +149,6 @@ class OpenAICompatibleClient:
     async def _make_request(self, headers: dict[str, str], body: dict[str, object]) -> dict[str, object]:
         http = self._require_http()
 
-        last_err: Exception | None = None
         for attempt in range(self._retry_count):
             try:
                 async with concurrency_guard(self._sem):
@@ -157,13 +156,20 @@ class OpenAICompatibleClient:
                     response.raise_for_status()
                     response_body: dict[str, object] = response.json()
                     return response_body
-            except Exception as exc:
-                last_err = exc
-                if attempt < self._retry_count - 1:
-                    await asyncio.sleep(2**attempt)
+            # Catch only transient failures; anything else (parse errors, etc.) bubbles
+            # up — it would fail identically on retry. 4xx other than 429 is a client
+            # error, so it isn't retryable either. This matches the SDK clients' policy.
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                retryable = (
+                    isinstance(exc, httpx.TransportError)
+                    or exc.response.status_code == 429
+                    or exc.response.status_code >= 500
+                )
+                if not retryable or attempt == self._retry_count - 1:
+                    raise
+                await asyncio.sleep(2**attempt)
 
-        assert last_err is not None, "retry loop ended without an exception"
-        raise last_err
+        raise RuntimeError("retry loop ended without a request")  # only reachable if retry_count < 1
 
     def _extract_text(self, body: dict[str, object]) -> str:
         choices = body.get("choices")
