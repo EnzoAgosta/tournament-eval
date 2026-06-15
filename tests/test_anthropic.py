@@ -43,6 +43,7 @@ class TestAnthropicClient:
         assert rec.json["model"] == "claude"
         assert rec.json["max_tokens"] == 10
         assert rec.json["system"] == "sys"
+        assert rec.json["temperature"] == 0.5
         assert rec.json["messages"] == [{"role": "user", "content": "hi"}]
 
     async def test_generate_without_system_omits_it(self, http_mock: _HttpMock) -> None:
@@ -50,6 +51,14 @@ class TestAnthropicClient:
         client = _client(transport)
         await client.generate("hi")
         assert "system" not in rec.json  # omit sentinel, not null
+
+    async def test_generate_omits_temperature_when_unset(self, http_mock: _HttpMock) -> None:
+        # Current models (Opus 4.7+/Fable) 400 if temperature is sent at all,
+        # so the default path must omit it rather than send 1.0.
+        transport, rec = http_mock(_text("x"))
+        client = _client(transport)
+        await client.generate("hi")
+        assert "temperature" not in rec.json
 
     async def test_generate_refusal_raises(self, http_mock: _HttpMock) -> None:
         transport, _ = http_mock(_message([{"type": "text", "text": ""}], stop_reason="refusal"))

@@ -45,7 +45,12 @@ class AnthropicClient:
         self._client = client
         self._model_id = kwargs["model_id"]
         self._name = kwargs.get("name")
-        self._temperature = kwargs.get("temperature", 1.0)
+        # Send temperature only when the caller set it explicitly. The current
+        # models (Opus 4.7+/Fable) reject temperature outright, so a default of
+        # 1.0 would 400 every request; omitting it lets the model use its own
+        # default. A caller that sets it on one of those models owns the 400.
+        temperature = kwargs.get("temperature")
+        self._temperature: float | Omit = temperature if temperature is not None else omit
         self._max_tokens = kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS)
         self._system_prompt = kwargs.get("system_prompt")
         self._sem = resolve_semaphore(semaphore, kwargs.get("max_concurrency"))
