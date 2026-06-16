@@ -36,7 +36,6 @@ the write into a threaded or async one, or concurrent appends could interleave.
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import orjson
 
@@ -66,7 +65,7 @@ def append_record(path: str | Path, record: object) -> None:
         f.write(b"\n")
 
 
-def _read_file[T](path: str | Path, from_json: Callable[[Any], T]) -> list[T]:
+def _read_file[T](path: str | Path, from_json: Callable[..., T]) -> list[T]:
     """Read one JSONL file, rebuilding each line via ``from_json``.
 
     A missing file reads as empty; blank lines are skipped.

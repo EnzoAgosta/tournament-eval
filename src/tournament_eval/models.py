@@ -39,7 +39,7 @@ class GenerationTask:
 
 
 class GenerationFailureDict(TypedDict):
-    task_id: str
+    generation_task_id: str
     author: str
     error_type: str
     message: str
@@ -49,7 +49,7 @@ class GenerationFailureDict(TypedDict):
 class GenerationFailure:
     """A single model's failure to generate a :class:`GenerationResult`."""
 
-    task_id: uuid.UUID
+    generation_task_id: uuid.UUID
     """The :class:`GenerationTask` this failure is for."""
     author: str
     """The model identifier that failed to generate this result."""
@@ -62,7 +62,7 @@ class GenerationFailure:
     def from_json(cls, data: GenerationFailureDict) -> GenerationFailure:
         """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
-            task_id=uuid.UUID(data["task_id"]),
+            generation_task_id=uuid.UUID(data["generation_task_id"]),
             author=data["author"],
             error_type=data["error_type"],
             message=data["message"],
@@ -71,7 +71,7 @@ class GenerationFailure:
 
 class GenerationResultDict(TypedDict):
     id: str
-    task_id: str
+    generation_task_id: str
     generation_prompt: str
     output: str
     reasoning: str | None
@@ -85,7 +85,7 @@ class GenerationResult:
 
     id: uuid.UUID
     """Unique identifier for this generation."""
-    task_id: uuid.UUID
+    generation_task_id: uuid.UUID
     """The :class:`GenerationTask` that was used to produce this generation."""
     generation_prompt: str
     """The exact prompt string sent to the model, verbatim."""
@@ -103,7 +103,7 @@ class GenerationResult:
         """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             id=uuid.UUID(data["id"]),
-            task_id=uuid.UUID(data["task_id"]),
+            generation_task_id=uuid.UUID(data["generation_task_id"]),
             generation_prompt=data["generation_prompt"],
             output=data["output"],
             reasoning=data["reasoning"],

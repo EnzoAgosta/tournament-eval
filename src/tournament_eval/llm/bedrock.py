@@ -11,7 +11,7 @@ Invoke request/response bodies are **model-specific**, so the abstract
 :class:`BedrockClient` owns the transport once and each family is a thin subclass
 implementing just two formatters — :meth:`~BedrockClient._build_body` and
 :meth:`~BedrockClient._extract_text` (plus :meth:`~BedrockClient._extract_reasoning`
-for the rare family that surfaces a trace, e.g. gpt-oss).  Built-in families: Anthropic (Claude),
+for a family that surfaces a trace, e.g. gpt-oss or Claude with thinking on).  Built-in families: Anthropic (Claude),
 Nova, Titan, Llama, Mistral, Cohere (Command R/R+), AI21 Jamba, Writer Palmyra,
 and OpenAI gpt-oss (the last three share an OpenAI chat-completions body shape).
 
@@ -35,41 +35,11 @@ import orjson
 from tournament_eval.llm.base import (
     GenerationConfig,
     GenerationResponse,
+    ReasoningEffort,
     StructuredResponse,
     concurrency_guard,
     resolve_semaphore,
 )
-
-# The Anthropic Messages API requires max_tokens; GenerationConfig leaves it optional.
-_DEFAULT_MAX_TOKENS = 4096
-
-
-def _json_instruction(schema: dict[str, object]) -> str:
-    """Best-effort structured-output instruction for families without a native one."""
-    return (
-        "\n\nRespond ONLY with a JSON object that conforms to this JSON Schema, "
-        "with no surrounding text or markdown:\n" + orjson.dumps(schema).decode()
-    )
-
-
-def _str_field(obj: object, key: str) -> str:
-    """Return ``obj[key]`` as a string, or raise if the shape is wrong."""
-    if not isinstance(obj, dict):
-        raise ValueError(f"Bedrock response: expected an object for {key!r}")
-    value = obj.get(key)
-    if not isinstance(value, str):
-        raise ValueError(f"Bedrock response: {key!r} is not a string")
-    return value
-
-
-def _list_field(obj: object, key: str) -> list[Any]:
-    """Return ``obj[key]`` as a non-empty list, or raise if the shape is wrong."""
-    if not isinstance(obj, dict):
-        raise ValueError(f"Bedrock response: expected an object for {key!r}")
-    value = obj.get(key)
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"Bedrock response: missing a non-empty {key!r}")
-    return value
 
 
 class BedrockRuntimeClient(Protocol):
@@ -99,11 +69,40 @@ class BedrockClient(abc.ABC):
         self._temperature = kwargs.get("temperature", 1.0)
         self._max_tokens = kwargs.get("max_tokens")
         self._system_prompt = kwargs.get("system_prompt")
+        self._reasoning_effort: ReasoningEffort | None = kwargs.get("reasoning_effort")
         self._sem = resolve_semaphore(semaphore, kwargs.get("max_concurrency"))
 
     @property
     def name(self) -> str:
         return self._name or self._model_id
+
+    @staticmethod
+    def _json_instruction(schema: dict[str, object]) -> str:
+        """Best-effort structured-output instruction for families without a native one."""
+        return (
+            "\n\nRespond ONLY with a JSON object that conforms to this JSON Schema, "
+            "with no surrounding text or markdown:\n" + orjson.dumps(schema).decode()
+        )
+
+    @staticmethod
+    def _str_field(obj: object, key: str) -> str:
+        """Return ``obj[key]`` as a string, or raise if the shape is wrong."""
+        if not isinstance(obj, dict):
+            raise ValueError(f"Bedrock response: expected an object for {key!r}")
+        value = obj.get(key)
+        if not isinstance(value, str):
+            raise ValueError(f"Bedrock response: {key!r} is not a string")
+        return value
+
+    @staticmethod
+    def _list_field(obj: object, key: str) -> list[Any]:
+        """Return ``obj[key]`` as a non-empty list, or raise if the shape is wrong."""
+        if not isinstance(obj, dict):
+            raise ValueError(f"Bedrock response: expected an object for {key!r}")
+        value = obj.get(key)
+        if not isinstance(value, list) or not value:
+            raise ValueError(f"Bedrock response: missing a non-empty {key!r}")
+        return value
 
     @abc.abstractmethod
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
@@ -111,7 +110,7 @@ class BedrockClient(abc.ABC):
 
         ``schema`` is ``None`` for plain generation and the JSON schema for a
         structured call.  Families without native structured output should fold it
-        into the prompt via :func:`_json_instruction` (best-effort).
+        into the prompt via :meth:`_json_instruction` (best-effort).
         """
         ...
 
@@ -124,7 +123,8 @@ class BedrockClient(abc.ABC):
         """Pull the model's reasoning trace from the response, if it has one.
 
         Defaults to ``None`` — over the Invoke API most families surface no
-        reasoning; a family that does (e.g. gpt-oss) overrides this.
+        reasoning; a family that does (e.g. gpt-oss, or Claude with thinking on)
+        overrides this.
         """
         return None
 
@@ -154,10 +154,7 @@ class BedrockClient(abc.ABC):
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         response = await self._invoke(self._build_body(prompt, schema))
         raw = self._extract_text(response)
-        parsed = orjson.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
+        return StructuredResponse(data=orjson.loads(raw), raw=raw)
 
 
 class AnthropicBedrockClient(BedrockClient):
@@ -166,37 +163,72 @@ class AnthropicBedrockClient(BedrockClient):
     Structured output uses ``output_config`` (json_schema), so it's reliable on the
     models that support it (the current generation: Opus 4.1 / 4.5 / 4.8, Sonnet
     4.6, Haiku 4.5, Fable); older Claude models on Bedrock aren't supported yet.
+
+    Setting ``reasoning_effort`` turns on extended thinking (adaptive/summarized) and
+    passes the effort dial through ``output_config``; the summarised trace comes back
+    as a thinking block and is surfaced as :attr:`GenerationResponse.reasoning`.
     """
 
     _ANTHROPIC_VERSION = "bedrock-2023-05-31"
+    # The Anthropic Messages API requires max_tokens; GenerationConfig leaves it optional.
+    _DEFAULT_MAX_TOKENS = 4096
+
+    def __init__(
+        self,
+        client: BedrockRuntimeClient,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+        **kwargs: Unpack[GenerationConfig],
+    ) -> None:
+        super().__init__(client, semaphore=semaphore, **kwargs)
+        # Current Claude models reject an explicit temperature (and thinking forces it
+        # unset), so we only send one when the caller set it — they own the 400.
+        self._temperature_set = "temperature" in kwargs
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
         body: dict[str, object] = {
             "anthropic_version": self._ANTHROPIC_VERSION,
-            "max_tokens": self._max_tokens if self._max_tokens is not None else _DEFAULT_MAX_TOKENS,
-            "temperature": self._temperature,
+            "max_tokens": self._max_tokens if self._max_tokens is not None else self._DEFAULT_MAX_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if self._temperature_set:
+            body["temperature"] = self._temperature
         if self._system_prompt is not None:
             body["system"] = self._system_prompt
+        if self._reasoning_effort is not None:
+            # "summarized" is what makes the returned thinking block carry text; the
+            # raw chain is never exposed. The effort level passes through unchanged —
+            # Anthropic's levels are exactly ReasoningEffort.
+            body["thinking"] = {"type": "adaptive", "display": "summarized"}
+        output_config: dict[str, object] = {}
         if schema is not None:
-            body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+            output_config["format"] = {"type": "json_schema", "schema": schema}
+        if self._reasoning_effort is not None:
+            output_config["effort"] = self._reasoning_effort
+        if output_config:
+            body["output_config"] = output_config
         return body
 
     def _extract_text(self, response: dict[str, Any]) -> str:
         if response.get("stop_reason") == "refusal":
             raise ValueError("Model refused to respond")
-        for block in _list_field(response, "content"):
+        for block in self._list_field(response, "content"):
             if isinstance(block, dict) and block.get("type") == "text":
-                return _str_field(block, "text")
+                return self._str_field(block, "text")
         raise ValueError("Bedrock/Claude response had no text block")
+
+    def _extract_reasoning(self, response: dict[str, Any]) -> str | None:
+        for block in self._list_field(response, "content"):
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                return self._str_field(block, "thinking")
+        return None
 
 
 class NovaBedrockClient(BedrockClient):
     """Amazon Nova — messages body; structured output is best-effort (prompt-injected)."""
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        text = prompt if schema is None else prompt + _json_instruction(schema)
+        text = prompt if schema is None else prompt + self._json_instruction(schema)
         inference: dict[str, object] = {"temperature": self._temperature}
         if self._max_tokens is not None:
             inference["maxTokens"] = self._max_tokens
@@ -212,9 +244,9 @@ class NovaBedrockClient(BedrockClient):
         output = response.get("output")
         if not isinstance(output, dict):
             raise ValueError("Nova response missing 'output'")
-        for block in _list_field(output.get("message"), "content"):
+        for block in self._list_field(output.get("message"), "content"):
             if isinstance(block, dict) and "text" in block:
-                return _str_field(block, "text")
+                return self._str_field(block, "text")
         raise ValueError("Nova response had no text block")
 
 
@@ -222,7 +254,7 @@ class TitanBedrockClient(BedrockClient):
     """Amazon Titan Text — inputText body; structured output is best-effort."""
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        text = prompt if schema is None else prompt + _json_instruction(schema)
+        text = prompt if schema is None else prompt + self._json_instruction(schema)
         if self._system_prompt is not None:
             text = f"{self._system_prompt}\n\n{text}"
         config: dict[str, object] = {"temperature": self._temperature}
@@ -231,7 +263,7 @@ class TitanBedrockClient(BedrockClient):
         return {"inputText": text, "textGenerationConfig": config}
 
     def _extract_text(self, response: dict[str, Any]) -> str:
-        return _str_field(_list_field(response, "results")[0], "outputText")
+        return self._str_field(self._list_field(response, "results")[0], "outputText")
 
 
 class LlamaBedrockClient(BedrockClient):
@@ -241,7 +273,7 @@ class LlamaBedrockClient(BedrockClient):
     """
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        text = prompt if schema is None else prompt + _json_instruction(schema)
+        text = prompt if schema is None else prompt + self._json_instruction(schema)
         body: dict[str, object] = {
             "prompt": self._format(text),
             "temperature": self._temperature,
@@ -259,7 +291,7 @@ class LlamaBedrockClient(BedrockClient):
         return "".join(parts)
 
     def _extract_text(self, response: dict[str, Any]) -> str:
-        return _str_field(response, "generation")
+        return self._str_field(response, "generation")
 
 
 class MistralBedrockClient(BedrockClient):
@@ -270,7 +302,7 @@ class MistralBedrockClient(BedrockClient):
     """
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        text = prompt if schema is None else prompt + _json_instruction(schema)
+        text = prompt if schema is None else prompt + self._json_instruction(schema)
         if self._system_prompt is not None:
             text = f"{self._system_prompt}\n\n{text}"
         body: dict[str, object] = {
@@ -282,7 +314,7 @@ class MistralBedrockClient(BedrockClient):
         return body
 
     def _extract_text(self, response: dict[str, Any]) -> str:
-        return _str_field(_list_field(response, "outputs")[0], "text")
+        return self._str_field(self._list_field(response, "outputs")[0], "text")
 
 
 class CohereBedrockClient(BedrockClient):
@@ -293,7 +325,7 @@ class CohereBedrockClient(BedrockClient):
     """
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        message = prompt if schema is None else prompt + _json_instruction(schema)
+        message = prompt if schema is None else prompt + self._json_instruction(schema)
         body: dict[str, object] = {
             "message": message,
             "temperature": self._temperature,
@@ -305,7 +337,7 @@ class CohereBedrockClient(BedrockClient):
         return body
 
     def _extract_text(self, response: dict[str, Any]) -> str:
-        return _str_field(response, "text")
+        return self._str_field(response, "text")
 
 
 class _OpenAIChatBedrockClient(BedrockClient):
@@ -320,7 +352,7 @@ class _OpenAIChatBedrockClient(BedrockClient):
     _MAX_TOKENS_KEY = "max_tokens"
 
     def _build_body(self, prompt: str, schema: dict[str, object] | None) -> dict[str, object]:
-        text = prompt if schema is None else prompt + _json_instruction(schema)
+        text = prompt if schema is None else prompt + self._json_instruction(schema)
         messages: list[dict[str, str]] = []
         if self._system_prompt is not None:
             messages.append({"role": "system", "content": self._system_prompt})
@@ -335,9 +367,9 @@ class _OpenAIChatBedrockClient(BedrockClient):
 
     def _content(self, response: dict[str, Any]) -> str:
         """The raw ``choices[0].message.content`` string, before any cleaning."""
-        choice = _list_field(response, "choices")[0]
+        choice = self._list_field(response, "choices")[0]
         message = choice.get("message") if isinstance(choice, dict) else None
-        return _str_field(message, "content")
+        return self._str_field(message, "content")
 
     def _extract_text(self, response: dict[str, Any]) -> str:
         return self._clean(self._content(response))

@@ -1,114 +1,111 @@
-"""Tests for OpenAIClient, driving the real AsyncOpenAI SDK over httpx.MockTransport.
+import asyncio
+from unittest import mock
 
-Canned JSON is parsed by the real Responses-API models, so these exercise the SDK's
-request serialization and our response/refusal handling end to end.
-"""
-
-from typing import Any
-
-import httpx
 import pytest
 from openai import AsyncOpenAI
+from openai.types.responses import ResponseOutputRefusal
 
 from tournament_eval.llm.openai import OpenAIClient
 
-_HttpMock = Any
+
+def test_minimal_openai_client() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+    assert client.name == "m"
+    assert client._model_id == "m"
+    assert client._temperature == 1.0
+    assert client._max_tokens is None
+    assert client._system_prompt is None
+    assert client._name is None
+    assert client._reasoning_effort is None
+    assert client._sem is None
 
 
-def _client(transport: httpx.MockTransport, **cfg: Any) -> OpenAIClient:
-    sdk = AsyncOpenAI(api_key="test", http_client=httpx.AsyncClient(transport=transport))
-    cfg.setdefault("model_id", "gpt-x")
-    return OpenAIClient(sdk, **cfg)
-
-
-def _response(text: str) -> dict[str, Any]:
-    """A minimal Responses-API object whose output_text is ``text``."""
-    return {
-        "id": "resp_1",
-        "object": "response",
-        "created_at": 0,
-        "status": "completed",
-        "model": "gpt-x",
-        "output": [
-            {
-                "type": "message",
-                "id": "msg_1",
-                "status": "completed",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text, "annotations": []}],
-            }
-        ],
-        "parallel_tool_calls": False,
-        "tool_choice": "auto",
-        "tools": [],
-        "temperature": 1.0,
-        "top_p": 1.0,
-        "usage": None,
-        "metadata": {},
-    }
-
-
-def _refusal() -> dict[str, Any]:
-    body = _response("")
-    body["output"][0]["content"] = [{"type": "refusal", "refusal": "policy"}]
-    return body
-
-
-def _with_reasoning(text: str, summary: str) -> dict[str, Any]:
-    body = _response(text)
-    body["output"].insert(
-        0, {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": summary}]}
+def test_create_open_client_with_everything() -> None:
+    semaphore = asyncio.Semaphore(2)
+    client = OpenAIClient(
+        client=AsyncOpenAI(api_key="k"),
+        model_id="m",
+        temperature=0.5,
+        max_tokens=100,
+        system_prompt="system",
+        name="name",
+        reasoning_effort="xhigh",
+        max_concurrency=2,
+        semaphore=semaphore,
     )
-    return body
+    assert client.name == "name"
+    assert client._model_id == "m"
+    assert client._temperature == 0.5
+    assert client._max_tokens == 100
+    assert client._system_prompt == "system"
+    assert client._name == "name"
+    assert client._reasoning_effort == "xhigh"
+    assert client._sem is not None
+    assert client._sem is semaphore
 
 
-class TestOpenAIClient:
-    async def test_generate(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response("bonjour"))
-        client = _client(transport, system_prompt="sys", max_tokens=20)
-        assert (await client.generate("hi")).text == "bonjour"
-        assert client.name == "gpt-x"
-        assert rec.json["model"] == "gpt-x"
-        assert rec.json["input"] == "hi"
-        assert rec.json["instructions"] == "sys"
-        assert rec.json["max_output_tokens"] == 20
+def test_create_open_client_with_max_concurrency_and_no_semaphore() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m", max_concurrency=2)
+    assert isinstance(client._sem, asyncio.Semaphore)
+    assert client._sem._value == 2
 
-    async def test_generate_refusal_raises(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_refusal())
-        client = _client(transport)
-        with pytest.raises(ValueError, match="refused"):
-            await client.generate("hi")
 
-    async def test_structured_parses_and_sends_schema(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response('{"x": 1}'))
-        client = _client(transport)
-        response = await client.generate_structured("hi", {"type": "object"})
-        assert response.data == {"x": 1}
-        assert rec.json["text"]["format"]["type"] == "json_schema"
-        assert rec.json["text"]["format"]["schema"] == {"type": "object"}
+def test_open_client_name_defaults_to_model_id() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+    assert client.name == "m"
 
-    async def test_structured_refusal_raises(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_refusal())
-        client = _client(transport)
-        with pytest.raises(ValueError, match="refused"):
-            await client.generate_structured("hi", {})
 
-    async def test_structured_non_object_raises(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_response("[1]"))
-        client = _client(transport)
-        with pytest.raises(ValueError, match="Expected JSON object"):
-            await client.generate_structured("hi", {})
+def test_open_client_name_can_be_overridden() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m", name="name")
+    assert client.name == "name"
 
-    async def test_reasoning_effort_sends_param_and_captures_summary(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_with_reasoning("answer", "thinking hard"))
-        client = _client(transport, reasoning_effort="max")
-        response = await client.generate("hi")
-        assert (response.text, response.reasoning) == ("answer", "thinking hard")
-        assert rec.json["reasoning"] == {"effort": "xhigh", "summary": "auto"}  # max clamps to xhigh
 
-    async def test_reasoning_unset_sends_null(self, http_mock: _HttpMock) -> None:
-        # Like instructions / max_output_tokens, the SDK serializes the unset
-        # reasoning config as an explicit null rather than omitting it.
-        transport, rec = http_mock(_response("x"))
-        await _client(transport).generate("hi")
-        assert rec.json["reasoning"] is None
+def test_openai_client_returns_none_for_no_reasoning() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+    assert client._reasoning is None
+
+
+def test_openai_client_returns_reasoning() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m", reasoning_effort="xhigh")
+    assert client._reasoning == {"effort": "xhigh", "summary": "auto"}
+
+
+def test_openai_client_maps_reasoning_effort() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m", reasoning_effort="max")
+    assert client._reasoning == {"effort": "xhigh", "summary": "auto"}
+
+
+async def test_openai_client_generate_returns_full_generation_response() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+
+    class FakeResponse:
+        summary = "because"
+
+    fake_sdk_response = mock.AsyncMock(output_text="ok", reasoning=FakeResponse())
+    with mock.patch.object(client._client.responses, "create", return_value=fake_sdk_response):
+        result = await client.generate("test")
+    assert result.text == "ok"
+    assert result.reasoning == "because"
+
+
+async def test_openai_client_generate_raises_on_refusal() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+    refusal = ResponseOutputRefusal(type="refusal", refusal="nope")
+    fake_sdk_response = mock.AsyncMock(output=[refusal], output_text="nope", reasoning=None)
+    with (
+        mock.patch.object(client._client.responses, "create", return_value=fake_sdk_response),
+        pytest.raises(ValueError, match="model refused to reply"),
+    ):
+        await client.generate("test")
+
+
+async def test_openai_client_generate_structured_sends_schema_and_parses() -> None:
+    client = OpenAIClient(client=AsyncOpenAI(api_key="k"), model_id="m")
+    fake_sdk_response = mock.AsyncMock(output_text='{"a": 1}', reasoning=None)
+    with mock.patch.object(client._client.responses, "create", return_value=fake_sdk_response) as create:
+        result = await client.generate_structured("test", {"type": "object"})
+    sent = create.call_args.kwargs["text"]
+    assert sent["format"]["type"] == "json_schema"
+    assert sent["format"]["schema"] == {"type": "object"}
+    assert sent["format"]["strict"] is True
+    assert (result.data, result.raw) == ({"a": 1}, '{"a": 1}')

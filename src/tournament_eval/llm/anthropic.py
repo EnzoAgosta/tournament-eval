@@ -36,12 +36,12 @@ from tournament_eval.llm.base import (
     resolve_semaphore,
 )
 
-# The Messages API requires max_tokens; GenerationConfig leaves it optional.
-_DEFAULT_MAX_TOKENS = 4096
-
 
 class AnthropicClient:
     """Adapter over a caller-provided :class:`anthropic.AsyncAnthropic`."""
+
+    # The Messages API requires max_tokens; GenerationConfig leaves it optional.
+    _DEFAULT_MAX_TOKENS = 4096
 
     def __init__(
         self,
@@ -59,7 +59,7 @@ class AnthropicClient:
         # default. A caller that sets it on one of those models owns the 400.
         temperature = kwargs.get("temperature")
         self._temperature: float | Omit = temperature if temperature is not None else omit
-        self._max_tokens = kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS)
+        self._max_tokens = kwargs.get("max_tokens", self._DEFAULT_MAX_TOKENS)
         self._system_prompt = kwargs.get("system_prompt")
         self._reasoning_effort: ReasoningEffort | None = kwargs.get("reasoning_effort")
         self._sem = resolve_semaphore(semaphore, kwargs.get("max_concurrency"))
@@ -89,7 +89,7 @@ class AnthropicClient:
             config["effort"] = self._reasoning_effort
         return config or omit
 
-    def _text(self, message: Message) -> str:
+    def _extract_text(self, message: Message) -> str:
         if message.stop_reason == "refusal":
             raise ValueError("Model refused to respond")
         for block in message.content:
@@ -97,7 +97,7 @@ class AnthropicClient:
                 return block.text
         raise ValueError("Anthropic response had no text block")
 
-    def _reasoning(self, message: Message) -> str | None:
+    def _extract_reasoning(self, message: Message) -> str | None:
         for block in message.content:
             if isinstance(block, ThinkingBlock):
                 return block.thinking
@@ -114,7 +114,7 @@ class AnthropicClient:
                 output_config=self._output_config(None),
                 messages=[MessageParam(role="user", content=prompt)],
             )
-        return GenerationResponse(text=self._text(message), reasoning=self._reasoning(message))
+        return GenerationResponse(text=self._extract_text(message), reasoning=self._extract_reasoning(message))
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         async with concurrency_guard(self._sem):
@@ -127,8 +127,5 @@ class AnthropicClient:
                 output_config=self._output_config(schema),
                 messages=[MessageParam(role="user", content=prompt)],
             )
-        raw = self._text(message)
-        parsed = orjson.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
+        raw = self._extract_text(message)
+        return StructuredResponse(data=orjson.loads(raw), raw=raw)

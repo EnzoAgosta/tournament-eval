@@ -1,94 +1,294 @@
 """Tests for the pure data models — chiefly ``from_json`` (str -> UUID) rebuilding."""
 
 import uuid
+from collections.abc import Callable
+
+import pytest
 
 from tournament_eval.models import (
     GenerationFailure,
+    GenerationFailureDict,
     GenerationResult,
+    GenerationResultDict,
     GenerationTask,
+    GenerationTaskDict,
     RankingFailure,
+    RankingFailureDict,
     RankingResult,
+    RankingResultDict,
     RankingTask,
+    RankingTaskDict,
 )
 
 
-def test_generation_task_from_json() -> None:
-    task_id = uuid.uuid4()
-    task = GenerationTask.from_json({"id": str(task_id), "generation_prompt": "translate"})
-    assert task.id == task_id
-    assert task.generation_prompt == "translate"
+@pytest.mark.parametrize(
+    ("method", "data", "expected"),
+    [
+        (
+            GenerationTask.from_json,
+            {"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "generation_prompt": "test prompt"},
+            GenerationTask(id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), generation_prompt="test prompt"),
+        ),
+        (
+            GenerationResult.from_json,
+            {
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "generation_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "generation_prompt": "test prompt",
+                "output": "some output",
+                "reasoning": "some reasoning",
+                "author": "test-model",
+                "metadata": {"cost": 0.1, "latency": 0.2},
+            },
+            GenerationResult(
+                id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                generation_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                generation_prompt="test prompt",
+                output="some output",
+                reasoning="some reasoning",
+                author="test-model",
+                metadata={"cost": 0.1, "latency": 0.2},
+            ),
+        ),
+        (
+            GenerationFailure.from_json,
+            {
+                "generation_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "author": "test-model",
+                "error_type": "RuntimeError",
+                "message": "boom!",
+            },
+            GenerationFailure(
+                generation_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                author="test-model",
+                error_type="RuntimeError",
+                message="boom!",
+            ),
+        ),
+        (
+            RankingTask.from_json,
+            {
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "generation_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "ranking_prompt": "Rank.",
+                "generations": {
+                    "A": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "B": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                },
+            },
+            RankingTask(
+                id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                generation_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                ranking_prompt="Rank.",
+                generations={
+                    "A": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    "B": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                },
+            ),
+        ),
+        (
+            RankingResult.from_json,
+            {
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "ranking_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "ranking_prompt": "Rank.",
+                "author": "test-model",
+                "raw_model_ranking": ["B", "A"],
+                "ranking": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                "reasoning": "some reasoning",
+                "raw_response": "some raw response",
+                "metadata": {"cost": 0.1, "latency": 0.2},
+            },
+            RankingResult(
+                id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                ranking_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                ranking_prompt="Rank.",
+                author="test-model",
+                raw_model_ranking=["B", "A"],
+                ranking=[
+                    uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                ],
+                reasoning="some reasoning",
+                raw_response="some raw response",
+                metadata={"cost": 0.1, "latency": 0.2},
+            ),
+        ),
+        (
+            RankingFailure.from_json,
+            {
+                "ranking_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "author": "test-model",
+                "error_type": "RuntimeError",
+                "message": "boom!",
+            },
+            RankingFailure(
+                ranking_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                author="test-model",
+                error_type="RuntimeError",
+                message="boom!",
+            ),
+        ),
+    ],
+)
+def test_from_json_rebuilds[T](method: Callable[..., T], data: dict[str, object], expected: T) -> None:
+    assert method(data) == expected
 
 
-def test_generation_failure_from_json() -> None:
-    task_id = uuid.uuid4()
-    failure = GenerationFailure.from_json(
-        {"task_id": str(task_id), "author": "m", "error_type": "RuntimeError", "message": "boom"}
-    )
-    assert failure.task_id == task_id
-    assert (failure.author, failure.error_type, failure.message) == ("m", "RuntimeError", "boom")
+@pytest.mark.parametrize(
+    "method",
+    [
+        GenerationTask.from_json,
+        GenerationResult.from_json,
+        RankingTask.from_json,
+        RankingResult.from_json,
+    ],
+)
+def test_from_json_fails_on_invalid_uuid(method: Callable[..., object]) -> None:
+    with pytest.raises(ValueError, match="UUID"):
+        method({"id": "not a uuid"})
 
 
-def test_generation_result_from_json() -> None:
-    rid, task_id = uuid.uuid4(), uuid.uuid4()
-    result = GenerationResult.from_json(
-        {
-            "id": str(rid),
-            "task_id": str(task_id),
-            "generation_prompt": "p",
-            "output": "o",
-            "reasoning": "thought about it",
-            "author": "gpt",
-            "metadata": {"latency": 1.5},
-        }
-    )
-    assert result.id == rid
-    assert result.task_id == task_id
-    assert result.output == "o"
-    assert result.reasoning == "thought about it"
-    assert result.metadata == {"latency": 1.5}
+def test_generation_failure_from_json_fails_on_invalid_uuid() -> None:
+    with pytest.raises(ValueError, match="UUID"):
+        GenerationFailure.from_json({"generation_task_id": "not a uuid"})  # type: ignore[typeddict-item]
 
 
-def test_ranking_task_from_json() -> None:
-    rt_id, gen_a, gen_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    gen_task_id = uuid.uuid4()
-    task = RankingTask.from_json(
-        {
-            "id": str(rt_id),
-            "generation_task_id": str(gen_task_id),
-            "ranking_prompt": "rank",
-            "generations": {"A": str(gen_a), "B": str(gen_b)},
-        }
-    )
-    assert task.id == rt_id
-    assert task.generation_task_id == gen_task_id
-    assert task.generations == {"A": gen_a, "B": gen_b}
+def test_ranking_failure_from_json_fails_on_invalid_uuid() -> None:
+    with pytest.raises(ValueError, match="UUID"):
+        RankingFailure.from_json({"ranking_task_id": "not a uuid"})  # type: ignore[typeddict-item]
 
 
-def test_ranking_failure_from_json() -> None:
-    rt_id = uuid.uuid4()
-    failure = RankingFailure.from_json(
-        {"ranking_task_id": str(rt_id), "author": "judge", "error_type": "ValueError", "message": "bad"}
-    )
-    assert failure.ranking_task_id == rt_id
-    assert failure.author == "judge"
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "id",
+        "generation_prompt",
+    ],
+)
+def test_generation_task_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: GenerationTaskDict = {"id": str(uuid.uuid4()), "generation_prompt": "test prompt"}
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        GenerationTask.from_json(data)
 
 
-def test_ranking_result_from_json() -> None:
-    rid, rt_id, g1, g2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    result = RankingResult.from_json(
-        {
-            "id": str(rid),
-            "ranking_task_id": str(rt_id),
-            "ranking_prompt": "rp",
-            "author": "judge",
-            "raw_model_ranking": ["B", "A"],
-            "ranking": [str(g1), str(g2)],
-            "reasoning": None,
-            "raw_response": "{}",
-            "metadata": {},
-        }
-    )
-    assert result.id == rid
-    assert result.ranking == [g1, g2]
-    assert result.raw_model_ranking == ["B", "A"]
-    assert result.reasoning is None
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "generation_task_id",
+        "author",
+        "error_type",
+        "message",
+    ],
+)
+def test_generation_failure_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: GenerationFailureDict = {
+        "generation_task_id": str(uuid.uuid4()),
+        "author": "test-model",
+        "error_type": "RuntimeError",
+        "message": "boom!",
+    }
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        GenerationFailure.from_json(data)
+
+
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "id",
+        "generation_task_id",
+        "generation_prompt",
+        "output",
+        "reasoning",
+        "author",
+        "metadata",
+    ],
+)
+def test_generation_result_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: GenerationResultDict = {
+        "id": str(uuid.uuid4()),
+        "generation_task_id": str(uuid.uuid4()),
+        "generation_prompt": "test prompt",
+        "output": "some output",
+        "reasoning": "some reasoning",
+        "author": "test-model",
+        "metadata": {"cost": 0.1, "latency": 0.2},
+    }
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        GenerationResult.from_json(data)
+
+
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "id",
+        "generation_task_id",
+        "ranking_prompt",
+        "generations",
+    ],
+)
+def test_ranking_task_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: RankingTaskDict = {
+        "id": str(uuid.uuid4()),
+        "generation_task_id": str(uuid.uuid4()),
+        "ranking_prompt": "Rank.",
+        "generations": {"A": str(uuid.uuid4()), "B": str(uuid.uuid4())},
+    }
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        RankingTask.from_json(data)
+
+
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "id",
+        "ranking_task_id",
+        "ranking_prompt",
+        "author",
+        "raw_model_ranking",
+        "ranking",
+        "reasoning",
+        "raw_response",
+        "metadata",
+    ],
+)
+def test_ranking_result_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: RankingResultDict = {
+        "id": str(uuid.uuid4()),
+        "ranking_task_id": str(uuid.uuid4()),
+        "ranking_prompt": "Rank.",
+        "author": "test-model",
+        "raw_model_ranking": ["B", "A"],
+        "ranking": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+        "reasoning": "some reasoning",
+        "raw_response": "some raw response",
+        "metadata": {"cost": 0.1, "latency": 0.2},
+    }
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        RankingResult.from_json(data)
+
+
+@pytest.mark.parametrize(
+    "missing_arg",
+    [
+        "ranking_task_id",
+        "author",
+        "error_type",
+        "message",
+    ],
+)
+def test_ranking_failure_from_json_fails_on_missing_arg(missing_arg: str) -> None:
+    data: RankingFailureDict = {
+        "ranking_task_id": str(uuid.uuid4()),
+        "author": "test-model",
+        "error_type": "RuntimeError",
+        "message": "boom!",
+    }
+    data.pop(missing_arg)  # type: ignore[misc]
+    with pytest.raises(KeyError, match=missing_arg):
+        RankingFailure.from_json(data)

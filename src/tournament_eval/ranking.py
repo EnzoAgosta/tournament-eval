@@ -128,9 +128,7 @@ class DefaultRankingTemplate(RankingTemplate):
             },
             "reasoning": {
                 "type": "string",
-                "description": (
-                    "Optional step-by-step analysis and explanation behind overall ranking and tie breakers."
-                ),
+                "description": ("Analysis and explanation behind overall ranking and tie breakers."),
             },
         },
         "required": ["ranking"],
@@ -146,15 +144,19 @@ class DefaultRankingTemplate(RankingTemplate):
         candidates: Mapping[str, GenerationResult],
     ) -> str:
         lines: list[str] = []
-        first = next(iter(candidates.values()), None)
-        if first is not None:
-            lines += [f"The models were given this task:\n{first.generation_prompt}", ""]
-
-        lines += [ranking_task.ranking_prompt, "", "Candidates:"]
-        for alias, result in candidates.items():
-            lines.append(f"{alias}. {result.output}")
-            if self.include_reasoning and result.reasoning:
-                lines.append(f"{alias} reasoning: {result.reasoning}")
+        if not candidates:
+            raise ValueError("render needs at least one candidate")
+        generation_prompts = {result.generation_prompt for result in candidates.values()}
+        if len(generation_prompts) != 1:
+            raise ValueError("All candidates must have the same generation_prompt")
+        lines.extend(
+            [
+                f"The models were given this task:\n{generation_prompts.pop()}",
+                "",
+                ranking_task.ranking_prompt,
+                "",
+            ]
+        )
 
         lines.extend(
             [
@@ -162,15 +164,22 @@ class DefaultRankingTemplate(RankingTemplate):
                 "Respond ONLY with a JSON object in this exact format:",
                 '{"ranking": ["A", "B", "C"], "reasoning": "..."}',
                 "",
-                'The "ranking" field must list every candidate alias exactly once,',
-                'from best to worst. The "reasoning" field is optional.',
-                (
-                    "NO TIES ARE ALLOWED. If two outputs appear equal, break "
-                    'the tie as you see fit and explain why in the "reasoning" '
-                    "field."
-                ),
+                'The "ranking" field must list every candidate alias exactly once, from best to worst. '
+                'Explain the reasoning behind your ranking in the "reasoning" field.',
+                "",
+                "NO TIES ARE ALLOWED. If two outputs appear equal, break the tie as you see fit "
+                'and explain why in the "reasoning" field.',
+                "",
+                "Candidates:",
+                "",
             ]
         )
+
+        for alias, result in candidates.items():
+            lines.append(f"{alias}: {result.output}")
+            if self.include_reasoning and result.reasoning:
+                lines.append(f"{alias} reasoning: {result.reasoning}")
+
         return "\n".join(lines)
 
     @property

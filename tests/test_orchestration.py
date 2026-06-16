@@ -1,24 +1,27 @@
-"""Tests for the orchestration pipeline.
-
-These use Protocol-satisfying mock clients (canned behaviour, no wire protocol) —
-the right altitude for testing fan-out, lifecycle, failure isolation, resume,
-and persistence, none of which should care what a client is backed by.
-"""
-
+import contextlib
+import uuid
 from pathlib import Path
 from typing import Any
 
+import orjson
 import pytest
 
-from tests.conftest import _MakeGeneration, _MakeRankingTask, _MakeTask
-from tournament_eval import GenerationResponse, StructuredResponse
+from tests.conftest import (
+    GenerationResultFactory,
+    GenerationTaskFactory,
+    MockLLMClient,
+    RankingTaskFactory,
+)
+from tournament_eval.llm.base import GenerationResponse, StructuredResponse
 from tournament_eval.models import (
     GenerationFailure,
     GenerationResult,
     RankingFailure,
     RankingResult,
+    RankingTask,
 )
 from tournament_eval.orchestration import (
+    _open_clients,
     build_ranking_task,
     build_ranking_tasks,
     generate_all,
@@ -26,322 +29,709 @@ from tournament_eval.orchestration import (
     rank_all,
     rank_one,
 )
-from tournament_eval.persistence import (
-    read_generation_failure_file,
-    read_generation_result_file,
-    read_ranking_failure_file,
-    read_ranking_result_file,
-    read_ranking_task_file,
-)
 
 
-class _ManagedClient:
-    """A mock client that IS an async context manager (like the built-in client)."""
+async def test_generate_one_returns_generation_result(make_generation_task: GenerationTaskFactory) -> None:
+    client = MockLLMClient()
+    task = make_generation_task()
 
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self.opened = False
-        self.closed = False
+    result = await generate_one(task, client)
 
-    @property
-    def name(self) -> str:
-        return self._name
-
-    async def __aenter__(self) -> _ManagedClient:
-        self.opened = True
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        self.closed = True
-
-    async def generate(self, prompt: str) -> GenerationResponse:
-        assert self.opened, "used before being opened"
-        assert not self.closed, "used after being closed"
-        return GenerationResponse(text=f"{self._name}:{prompt}", reasoning=None)
-
-    async def generate_structured(self, _prompt: str, _schema: dict[str, object]) -> StructuredResponse:
-        raise AssertionError("not exercised")
+    assert isinstance(result, GenerationResult)
+    assert isinstance(result.id, uuid.UUID)
+    assert result.generation_task_id == task.id
+    assert result.generation_prompt == task.generation_prompt
+    assert result.output == client.generation_response.text
+    assert result.reasoning == client.generation_response.reasoning
+    assert result.author == client.name
 
 
-class _RankingClient:
-    """A mock judge: returns a fixed structured verdict regardless of prompt."""
+async def test_generate_one_returns_generation_failure_on_error(make_generation_task: GenerationTaskFactory) -> None:
+    client = MockLLMClient()
+    task = make_generation_task()
 
-    def __init__(self, name: str = "judge", *, ranking: list[str] | None = None, fail: bool = False) -> None:
-        self._name = name
-        self._ranking = ranking if ranking is not None else ["A", "B"]
-        self._fail = fail
+    async def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
 
-    @property
-    def name(self) -> str:
-        return self._name
+    client.generate = raise_error  # type: ignore[method-assign]
 
-    async def generate(self, _prompt: str) -> GenerationResponse:
-        raise AssertionError("not exercised")
+    result = await generate_one(task, client)
 
-    async def generate_structured(self, _prompt: str, _schema: dict[str, object]) -> StructuredResponse:
-        if self._fail:
-            raise RuntimeError("judge boom")
-        return StructuredResponse(data={"ranking": self._ranking}, raw="{}")
+    assert isinstance(result, GenerationFailure)
+    assert result.generation_task_id == task.id
+    assert result.author == client.name
+    assert result.error_type == "RuntimeError"
+    assert result.message == "boom"
 
 
-# --------------------------------------------------------------------------- #
-# generate_one / generate_all                                                   #
-# --------------------------------------------------------------------------- #
+async def test_generate_one_saves_to_results_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    client = MockLLMClient()
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+
+    result = await generate_one(task, client, results_path=results_path)
+
+    assert isinstance(result, GenerationResult)
+    assert isinstance(result.id, uuid.UUID)
+    assert result.generation_task_id == task.id
+    assert result.generation_prompt == task.generation_prompt
+    assert result.output == client.generation_response.text
+    assert result.reasoning == client.generation_response.reasoning
+    assert result.author == client.name
+
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
 
 
-class TestGenerateOne:
-    async def test_success(self, make_client: Any, make_task: _MakeTask) -> None:
-        result = await generate_one(make_task("p"), make_client("a", generate_responses={"p": "out"}))
-        assert isinstance(result, GenerationResult)
-        assert (result.author, result.output, result.reasoning) == ("a", "out", None)
+async def test_generate_one_saves_to_failures_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    client = MockLLMClient()
+    task = make_generation_task()
+    failures_path = tmp_path / "failures.jsonl"
 
-    async def test_captures_reasoning_from_response(self, make_task: _MakeTask) -> None:
-        class _Reasoner:
-            name = "r"
+    async def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
 
-            async def generate(self, _prompt: str) -> GenerationResponse:
-                return GenerationResponse(text="answer", reasoning="because")
+    client.generate = raise_error  # type: ignore[method-assign]
 
-            async def generate_structured(self, _p: str, _s: dict[str, object]) -> StructuredResponse:
-                raise AssertionError("not exercised")
+    result = await generate_one(task, client, failures_path=failures_path)
 
-        result = await generate_one(make_task("p"), _Reasoner())
-        assert isinstance(result, GenerationResult)
-        assert (result.output, result.reasoning) == ("answer", "because")
+    assert isinstance(result, GenerationFailure)
+    assert result.generation_task_id == task.id
+    assert result.author == client.name
+    assert result.error_type == "RuntimeError"
+    assert result.message == "boom"
 
-    async def test_failure_is_returned_not_raised(self, make_client: Any, make_task: _MakeTask) -> None:
-        result = await generate_one(make_task("p"), make_client("a", fail_on={"p"}))
-        assert isinstance(result, GenerationFailure)
-        assert (result.author, result.error_type) == ("a", "RuntimeError")
-
-    async def test_persists_result(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
-        path = tmp_path / "generations.jsonl"
-        client = make_client("a", generate_responses={"p": "out"})
-        result = await generate_one(make_task("p"), client, results_path=path)
-        assert read_generation_result_file(path) == [result]
-
-    async def test_persists_failure(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
-        path = tmp_path / "generation_failures.jsonl"
-        result = await generate_one(make_task("p"), make_client("a", fail_on={"p"}), failures_path=path)
-        assert read_generation_failure_file(path) == [result]
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
 
 
-class TestGenerateAll:
-    async def test_splits_results_and_failures(self, make_client: Any, make_task: _MakeTask) -> None:
-        task = make_task("p")
-        good = make_client("a", generate_responses={"p": "out"})
-        bad = make_client("b", fail_on={"p"})
-        results, failures = await generate_all([task], [good, bad])
-        assert {r.author for r in results} == {"a"}
-        assert {f.author for f in failures} == {"b"}
+async def test_generate_all_returns_list_of_generation_results(
+    make_generation_task: GenerationTaskFactory,
+) -> None:
+    client1 = MockLLMClient()
+    client2 = MockLLMClient()
+    task = make_generation_task()
+    client1.generation_response = GenerationResponse(text="one", reasoning="because")
+    client2.generation_response = GenerationResponse(text="two", reasoning="because")
+    client1.model = "client1"
+    client2.model = "client2"
 
-    async def test_opens_and_closes_context_manager_clients(self, make_client: Any, make_task: _MakeTask) -> None:
-        managed = _ManagedClient("cm")
-        plain = make_client("plain", generate_responses={"p": "x"})
-        results, _ = await generate_all([make_task("p")], [managed, plain])
-        assert managed.opened
-        assert managed.closed
-        assert {r.author for r in results} == {"cm", "plain"}
+    results, failures = await generate_all([task], clients=[client1, client2])
 
-    async def test_streams_to_results_path(self, tmp_path: Path, make_client: Any, make_task: _MakeTask) -> None:
-        task = make_task("p")
-        path = tmp_path / "generations.jsonl"
-        results, _ = await generate_all(
-            [task], [make_client("a", generate_responses={"p": "out"})], results_path=path
-        )
-        assert read_generation_result_file(path) == results
-
-    async def test_empty(self) -> None:
-        assert await generate_all([], []) == ([], [])
-
-    async def test_resume_skips_done_and_returns_complete_set(
-        self, tmp_path: Path, make_client: Any, make_task: _MakeTask
-    ) -> None:
-        task = make_task("p")
-        path = tmp_path / "generations.jsonl"
-        # First run: 'a' succeeds and is persisted; 'b' fails (nothing persisted for it).
-        a1 = make_client("a", generate_responses={"p": "out"})
-        b1 = make_client("b", fail_on={"p"})
-        run1_results, run1_failures = await generate_all([task], [a1, b1], results_path=path)
-        assert {r.author for r in run1_results} == {"a"}
-        assert {f.author for f in run1_failures} == {"b"}
-
-        # Second run: 'a' is skipped (loaded from disk), 'b' is retried and now succeeds.
-        a2 = make_client("a", fail_on={"p"})  # would fail if re-run — proves it's skipped
-        b2 = make_client("b", generate_responses={"p": "fixed"})
-        run2_results, run2_failures = await generate_all([task], [a2, b2], results_path=path)
-        assert run2_failures == []
-        # Returns the COMPLETE set: 'a' loaded from disk + 'b' produced this call.
-        assert {(r.author, r.output) for r in run2_results} == {("a", "out"), ("b", "fixed")}
-
-    async def test_resume_ignores_records_outside_current_universe(
-        self, tmp_path: Path, make_client: Any, make_task: _MakeTask
-    ) -> None:
-        task = make_task("p")
-        path = tmp_path / "generations.jsonl"
-        # Persist a result for a client no longer in the pool.
-        await generate_one(task, make_client("stale", generate_responses={"p": "old"}), results_path=path)
-        results, _ = await generate_all([task], [make_client("a", generate_responses={"p": "out"})], results_path=path)
-        assert {r.author for r in results} == {"a"}  # 'stale' filtered out
+    assert len(failures) == 0
+    assert len(results) == 2
+    result1, result2 = results
+    assert isinstance(result1, GenerationResult)
+    assert isinstance(result2, GenerationResult)
+    assert result1.generation_task_id == result2.generation_task_id == task.id
+    assert result1.generation_prompt == result2.generation_prompt == task.generation_prompt
+    assert result1.output == "one"
+    assert result2.output == "two"
+    assert result1.reasoning == result2.reasoning == "because"
+    assert result1.author == client1.name
+    assert result2.author == client2.name
 
 
-# --------------------------------------------------------------------------- #
-# build_ranking_task(s)                                                         #
-# --------------------------------------------------------------------------- #
+async def test_generate_all_saves_to_results_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    client1 = MockLLMClient()
+    client2 = MockLLMClient()
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+    client1.generation_response = GenerationResponse(text="one", reasoning="because")
+    client2.generation_response = GenerationResponse(text="two", reasoning="because")
+    client1.model = "client1"
+    client2.model = "client2"
+
+    results, failures = await generate_all([task], clients=[client1, client2], results_path=results_path)
+
+    assert len(failures) == 0
+    assert len(results) == 2
+    result1, result2 = results
+    assert isinstance(result1, GenerationResult)
+    assert isinstance(result2, GenerationResult)
+    assert result1.generation_task_id == result2.generation_task_id == task.id
+    assert result1.generation_prompt == result2.generation_prompt == task.generation_prompt
+    assert result1.output == "one"
+    assert result2.output == "two"
+    assert result1.reasoning == result2.reasoning == "because"
+    assert result1.author == client1.name
+    assert result2.author == client2.name
+
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result1) + b"\n" + orjson.dumps(result2) + b"\n"
 
 
-class TestBuildRankingTasks:
-    def test_assigns_aliases(self, make_generation: _MakeGeneration) -> None:
-        results = [make_generation(), make_generation(), make_generation()]
-        task = build_ranking_task(results, "Rank.")
-        assert list(task.generations.keys()) == ["A", "B", "C"]
-        assert set(task.generations.values()) == {r.id for r in results}
-        assert task.ranking_prompt == "Rank."
+async def test_generate_all_saves_to_failures_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    failure_client = MockLLMClient()
+    result_client = MockLLMClient()
+    task = make_generation_task()
+    failures_path = tmp_path / "failures.jsonl"
+    failure_client.generation_response = GenerationResponse(text="one", reasoning="because")
+    result_client.generation_response = GenerationResponse(text="two", reasoning="because")
+    failure_client.model = "client1"
+    result_client.model = "client2"
 
-    def test_seed_makes_shuffle_deterministic(self, make_generation: _MakeGeneration) -> None:
-        results = [make_generation() for _ in range(5)]
-        a = build_ranking_task(results, "R", random_seed=7)
-        b = build_ranking_task(results, "R", random_seed=7)
-        assert list(a.generations.values()) == list(b.generations.values())
+    def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
 
-    def test_does_not_mutate_input(self, make_generation: _MakeGeneration) -> None:
-        results = [make_generation(), make_generation()]
-        before = list(results)
-        build_ranking_task(results, "R", random_seed=1)
-        assert results == before
+    failure_client.generate = raise_error  # type: ignore[method-assign]
 
-    def test_records_generation_task_id(self, make_task: _MakeTask, make_generation: _MakeGeneration) -> None:
-        t = make_task()
-        task = build_ranking_task([make_generation(task_id=t.id), make_generation(task_id=t.id)], "R")
-        assert task.generation_task_id == t.id
+    results, failures = await generate_all([task], clients=[failure_client, result_client], failures_path=failures_path)
 
-    def test_empty_results_raises(self) -> None:
-        with pytest.raises(ValueError, match="at least one"):
-            build_ranking_task([], "R")
+    assert len(results) == 1
+    assert len(failures) == 1
+    result, failure = results[0], failures[0]
+    assert isinstance(result, GenerationResult)
+    assert isinstance(failure, GenerationFailure)
+    assert result.generation_task_id == task.id
+    assert result.generation_prompt == task.generation_prompt
+    assert result.output == "two"
+    assert result.reasoning == "because"
+    assert result.author == result_client.name
+    assert failure.generation_task_id == task.id
+    assert failure.author == failure_client.name
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "boom"
 
-    def test_persists(self, tmp_path: Path, make_generation: _MakeGeneration) -> None:
-        path = tmp_path / "ranking_tasks.jsonl"
-        task = build_ranking_task([make_generation()], "R", tasks_path=path)
-        assert read_ranking_task_file(path) == [task]
-
-    def test_groups_by_task(self, make_task: _MakeTask, make_generation: _MakeGeneration) -> None:
-        t1, t2 = make_task(), make_task()
-        r1, r2, r3 = (
-            make_generation(task_id=t1.id),
-            make_generation(task_id=t1.id),
-            make_generation(task_id=t2.id),
-        )
-        tasks = build_ranking_tasks([t1, t2], [r1, r2, r3], "R")
-        assert len(tasks) == 2
-        assert set(tasks[0].generations.values()) == {r1.id, r2.id}
-        assert set(tasks[1].generations.values()) == {r3.id}
-
-    def test_skips_tasks_with_no_results(self, make_task: _MakeTask, make_generation: _MakeGeneration) -> None:
-        t1, t2 = make_task(), make_task()
-        tasks = build_ranking_tasks([t1, t2], [make_generation(task_id=t1.id)], "R")
-        assert len(tasks) == 1
-
-    def test_resume_reuses_persisted_tasks_frozen(
-        self, tmp_path: Path, make_task: _MakeTask, make_generation: _MakeGeneration
-    ) -> None:
-        t = make_task()
-        path = tmp_path / "ranking_tasks.jsonl"
-        first = build_ranking_tasks([t], [make_generation(task_id=t.id)], "R", tasks_path=path, random_seed=1)
-        # Rebuild with a *different* candidate set + seed: the persisted task is reused as-is, not rebuilt.
-        second = build_ranking_tasks(
-            [t],
-            [make_generation(task_id=t.id), make_generation(task_id=t.id)],
-            "R",
-            tasks_path=path,
-            random_seed=2,
-        )
-        assert second == first
-        assert read_ranking_task_file(path) == first  # nothing new appended
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(failure) + b"\n"
 
 
-# --------------------------------------------------------------------------- #
-# rank_one / rank_all                                                           #
-# --------------------------------------------------------------------------- #
+async def test_generate_all_saves_to_results_and_failures_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    failure_client = MockLLMClient()
+    result_client = MockLLMClient()
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+    failures_path = tmp_path / "failures.jsonl"
+    failure_client.generation_response = GenerationResponse(text="one", reasoning="because")
+    result_client.generation_response = GenerationResponse(text="two", reasoning="because")
+    failure_client.model = "client1"
+    result_client.model = "client2"
+
+    def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    failure_client.generate = raise_error  # type: ignore[method-assign]
+
+    results, failures = await generate_all(
+        [task], clients=[failure_client, result_client], results_path=results_path, failures_path=failures_path
+    )
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    result, failure = results[0], failures[0]
+    assert isinstance(result, GenerationResult)
+    assert isinstance(failure, GenerationFailure)
+    assert result.generation_task_id == task.id
+    assert result.generation_prompt == task.generation_prompt
+    assert result.output == "two"
+    assert result.reasoning == "because"
+    assert result.author == result_client.name
+    assert failure.generation_task_id == task.id
+    assert failure.author == failure_client.name
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "boom"
+
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(failure) + b"\n"
 
 
-class TestRankOne:
-    async def test_success_maps_aliases_to_ids(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a, b = make_generation(), make_generation()
-        task = make_ranking_task(generations={"A": a.id, "B": b.id})
-        result = await rank_one(task, _RankingClient(ranking=["B", "A"]), {a.id: a, b.id: b})
-        assert isinstance(result, RankingResult)
-        assert result.author == "judge"
-        assert result.raw_model_ranking == ["B", "A"]
-        assert result.ranking == [b.id, a.id]
+async def test_generate_all_reads_generation_results_from_results_path(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    client1 = MockLLMClient()
+    client2 = MockLLMClient()
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+    client1.generation_response = GenerationResponse(text="one", reasoning="because")
+    client2.generation_response = GenerationResponse(text="two", reasoning="because")
+    client1.model = "client1"
+    client2.model = "client2"
 
-    async def test_malformed_ranking_is_failure(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a, b = make_generation(), make_generation()
-        task = make_ranking_task(generations={"A": a.id, "B": b.id})
-        result = await rank_one(task, _RankingClient(ranking=["A"]), {a.id: a, b.id: b})  # missing B
-        assert isinstance(result, RankingFailure)
-        assert "Missing aliases" in result.message
+    await generate_one(task, client1, results_path=results_path)
 
-    async def test_client_error_is_failure(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a = make_generation()
-        task = make_ranking_task(generations={"A": a.id})
-        result = await rank_one(task, _RankingClient(ranking=["A"], fail=True), {a.id: a})
-        assert isinstance(result, RankingFailure)
-        assert result.error_type == "RuntimeError"
+    client1.generation_response = GenerationResponse(text="three", reasoning="because")
 
-    async def test_persists(
-        self, tmp_path: Path, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a = make_generation()
-        task = make_ranking_task(generations={"A": a.id})
-        path = tmp_path / "rankings.jsonl"
-        result = await rank_one(task, _RankingClient(ranking=["A"]), {a.id: a}, results_path=path)
-        assert read_ranking_result_file(path) == [result]
+    results, failures = await generate_all([task], clients=[client1, client2], results_path=results_path)
 
-    async def test_persists_failure(
-        self, tmp_path: Path, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a = make_generation()
-        task = make_ranking_task(generations={"A": a.id})
-        path = tmp_path / "ranking_failures.jsonl"
-        result = await rank_one(task, _RankingClient(fail=True), {a.id: a}, failures_path=path)
-        assert isinstance(result, RankingFailure)
-        assert read_ranking_failure_file(path) == [result]
+    assert len(failures) == 0
+    assert len(results) == 2
+    result1, result2 = results
+    assert isinstance(result1, GenerationResult)
+    assert isinstance(result2, GenerationResult)
+    assert result1.generation_task_id == result2.generation_task_id == task.id
+    assert result1.generation_prompt == result2.generation_prompt == task.generation_prompt
+    assert result1.output == "one"
+    assert result2.output == "two"
+    assert result1.reasoning == result2.reasoning == "because"
+    assert result1.author == client1.name
+    assert result2.author == client2.name
 
 
-class TestRankAll:
-    async def test_runs_every_judge(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a, b = make_generation(), make_generation()
-        task = make_ranking_task(generations={"A": a.id, "B": b.id})
-        results, failures = await rank_all([task], [a, b], [_RankingClient("j", ranking=["A", "B"])])
-        assert not failures
-        assert results[0].ranking == [a.id, b.id]
+async def test_generate_all_opens_and_closes_clients(make_generation_task: GenerationTaskFactory) -> None:
+    client1 = MockLLMClient()
+    client1.raise_on_enter = True
 
-    async def test_resume_skips_done_and_returns_complete_set(
-        self, tmp_path: Path, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a = make_generation()
-        task = make_ranking_task(generations={"A": a.id})
-        path = tmp_path / "rankings.jsonl"
-        run1, _ = await rank_all([task], [a], [_RankingClient("j", ranking=["A"])], results_path=path)
-        assert [r.author for r in run1] == ["j"]
-        # Rerun: 'j' would fail if re-invoked, but it's loaded from disk and skipped.
-        run2, failures2 = await rank_all([task], [a], [_RankingClient("j", fail=True)], results_path=path)
-        assert failures2 == []
-        assert run2 == run1
+    with pytest.raises(RuntimeError, match="Enter boom"):
+        await generate_all([make_generation_task()], clients=[client1])
 
-    async def test_failing_judge_becomes_a_failure(
-        self, make_generation: _MakeGeneration, make_ranking_task: _MakeRankingTask
-    ) -> None:
-        a = make_generation()
-        task = make_ranking_task(generations={"A": a.id})
-        results, failures = await rank_all([task], [a], [_RankingClient("j", fail=True)])
-        assert results == []
-        assert [f.author for f in failures] == ["j"]
+    client1.raise_on_exit = True
+    client1.raise_on_enter = False
+
+    with pytest.raises(RuntimeError, match="Exit boom"):
+        await generate_all([make_generation_task()], clients=[client1])
+
+
+async def test_open_clients_only_opens_async_context_manager() -> None:
+    client = object()
+    async with contextlib.AsyncExitStack() as stack:
+        opened = await _open_clients([client], stack)  # type: ignore[list-item]
+    assert opened == [client]
+    assert opened[0] is client
+
+
+async def test_generate_all_returns_all_generation_results(
+    make_generation_task: GenerationTaskFactory,
+    tmp_path: Path,
+) -> None:
+    client1 = MockLLMClient()
+    client2 = MockLLMClient()
+    client3 = MockLLMClient()
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+    client1.generation_response = GenerationResponse(text="one", reasoning="because one")
+    client2.generation_response = GenerationResponse(text="two", reasoning="because two")
+    client3.generation_response = GenerationResponse(text="three", reasoning="because three")
+    client1.model = "client1"
+    client2.model = "client2"
+    client3.model = "client3"
+
+    results, _ = await generate_all([task], clients=[client1, client2], results_path=results_path)
+    assert len(results) == 2
+
+    client1.generation_response = GenerationResponse(text="four", reasoning="because four")
+    client2.generation_response = GenerationResponse(text="five", reasoning="because five")
+
+    results, _ = await generate_all([task], clients=[client1, client2, client3], results_path=results_path)
+    assert len(results) == 3
+
+    result1, result2, result3 = results
+    assert all(isinstance(result, GenerationResult) for result in results)
+    assert all(result.generation_task_id == task.id for result in results)
+    assert all(result.generation_prompt == task.generation_prompt for result in results)
+    assert result1.output == "one"
+    assert result2.output == "two"
+    assert result3.output == "three"
+    assert result1.author == client1.name
+    assert result2.author == client2.name
+    assert result3.author == client3.name
+    assert result1.reasoning == "because one"
+    assert result2.reasoning == "because two"
+    assert result3.reasoning == "because three"
+
+
+async def test_generate_all_ignores_records_outside_current_universe(
+    tmp_path: Path, make_generation_task: GenerationTaskFactory
+) -> None:
+    task = make_generation_task(prompt="p")
+    path = tmp_path / "generations.jsonl"
+    client = MockLLMClient()
+    client.generation_response = GenerationResponse(text="old", reasoning="because out")
+    await generate_one(task, client, results_path=path)
+    client.generation_response = GenerationResponse(text="new", reasoning="because out")
+    results, _ = await generate_all([task], [client], results_path=path)
+    assert {r.author for r in results} == {"test-model"}
+
+
+def test_build_ranking_task(make_generation_result: GenerationResultFactory) -> None:
+    task_id = uuid.uuid4()
+    results = [make_generation_result(generation_task_id=task_id) for _ in range(3)]
+    task = build_ranking_task(results=results, ranking_prompt="test")
+    assert isinstance(task, RankingTask)
+    assert isinstance(task.id, uuid.UUID)
+    assert task.generation_task_id == task_id
+    assert task.ranking_prompt == "test"
+    assert set(task.generations.values()) == {result.id for result in results}
+    assert set(task.generations.keys()) == {"A", "B", "C"}
+
+
+def test_build_ranking_tasks(make_generation_result: GenerationResultFactory) -> None:
+    results = [make_generation_result() for _ in range(3)]
+    with pytest.raises(ValueError, match="must all be for the same task"):
+        build_ranking_task(results=results, ranking_prompt="test")
+
+
+def test_build_ranking_task_shuffles_deterministically(make_generation_result: GenerationResultFactory) -> None:
+    id = uuid.uuid4()
+    results = [make_generation_result(generation_task_id=id) for _ in range(10)]
+    task1 = build_ranking_task(results=results, ranking_prompt="test", random_seed=42)
+    task2 = build_ranking_task(results=results, ranking_prompt="test", random_seed=42)
+    assert task1.generations == task2.generations
+
+
+def test_build_ranking_task_saves_to_tasks_path(
+    make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    id = uuid.uuid4()
+    results = [make_generation_result(generation_task_id=id) for _ in range(3)]
+    tasks_path = tmp_path / "tasks.jsonl"
+    task = build_ranking_task(results=results, ranking_prompt="test", tasks_path=tasks_path)
+    assert isinstance(task, RankingTask)
+    assert isinstance(task.id, uuid.UUID)
+    assert task.generation_task_id == id
+    assert task.ranking_prompt == "test"
+    assert set(task.generations.values()) == {result.id for result in results}
+    assert set(task.generations.keys()) == {"A", "B", "C"}
+
+    with open(tasks_path, "rb") as f:
+        assert f.read() == orjson.dumps(task) + b"\n"
+
+
+def test_build_ranking_task_fails_on_no_results() -> None:
+    with pytest.raises(ValueError, match="build_ranking_task needs at least one GenerationResult"):
+        build_ranking_task(results=[], ranking_prompt="test")
+
+
+def test_build_ranking_tasks_return_ranking_tasks(
+    make_generation_task: GenerationTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    tasks = [make_generation_task() for _ in range(3)]
+    results = [make_generation_result(generation_task_id=task.id) for _ in range(3) for task in tasks]
+    ranking_tasks = build_ranking_tasks(tasks=tasks, generation_results=results, ranking_prompt="Test")
+
+    assert len(ranking_tasks) == 3
+    assert all(isinstance(task, RankingTask) for task in ranking_tasks)
+    assert all(task.ranking_prompt == "Test" for task in ranking_tasks)
+
+
+def test_build_ranking_tasks_fails_resuses_existing(
+    make_generation_task: GenerationTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    tasks = make_generation_task()
+    old_id, new_id = uuid.uuid4(), uuid.uuid4()
+    old_result = make_generation_result(generation_task_id=tasks.id, id=old_id)
+    path = tmp_path / "tasks.jsonl"
+    ranking_task = build_ranking_task(results=[old_result], ranking_prompt="Test", tasks_path=path)
+    new_result = make_generation_result(generation_task_id=tasks.id, id=new_id)
+    ranking_tasks = build_ranking_tasks(
+        tasks=[tasks], generation_results=[new_result], ranking_prompt="Test", tasks_path=path
+    )
+    assert len(ranking_tasks) == 1
+    new_ranking_task = ranking_tasks[0]
+    assert new_ranking_task.id == ranking_task.id
+    assert new_ranking_task.generation_task_id == tasks.id
+    assert new_ranking_task.ranking_prompt == "Test"
+    assert new_ranking_task.generations == ranking_task.generations
+    assert new_ranking_task.generations["A"] == old_result.id
+
+
+def test_build_ranking_tasks_fails_skips_tasks_without_results(make_generation_task: GenerationTaskFactory) -> None:
+    tasks = make_generation_task()
+    ranking_task = build_ranking_tasks(tasks=[tasks], generation_results=[], ranking_prompt="Test")
+    assert len(ranking_task) == 0
+
+
+async def test_rank_one_returns_ranking_result(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    client = MockLLMClient()
+    gen_a, gen_b = make_generation_result(), make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen_a.id, "B": gen_b.id})
+    lookup = {gen_a.id: gen_a, gen_b.id: gen_b}
+    ranking = {"ranking": ["B", "A"], "reasoning": "b is better"}
+    client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+
+    result = await rank_one(ranking_task, client, lookup)
+
+    assert isinstance(result, RankingResult)
+    assert isinstance(result.id, uuid.UUID)
+    assert result.ranking_task_id == ranking_task.id
+    assert result.author == client.name
+    assert result.raw_model_ranking == ["B", "A"]
+    assert result.ranking == [gen_b.id, gen_a.id]
+    assert result.reasoning == "b is better"
+    assert result.raw_response == client.structured_response.raw
+    assert ranking_task.ranking_prompt in result.ranking_prompt
+
+
+async def test_rank_one_returns_ranking_failure_on_error(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+
+    async def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    client.generate_structured = raise_error  # type: ignore[method-assign]
+
+    result = await rank_one(ranking_task, client, {gen.id: gen})
+
+    assert isinstance(result, RankingFailure)
+    assert result.ranking_task_id == ranking_task.id
+    assert result.author == client.name
+    assert result.error_type == "RuntimeError"
+    assert result.message == "boom"
+
+
+async def test_rank_one_returns_ranking_failure_on_malformed_ranking(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking = {"ranking": ["Z"]}  # alias not in the task
+    client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+
+    result = await rank_one(ranking_task, client, {gen.id: gen})
+
+    assert isinstance(result, RankingFailure)
+    assert result.ranking_task_id == ranking_task.id
+    assert result.author == client.name
+    assert result.error_type == "ValueError"
+    assert "Z" in result.message
+
+
+async def test_rank_one_saves_to_results_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking = {"ranking": ["A"], "reasoning": "ok"}
+    client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+    results_path = tmp_path / "rankings.jsonl"
+
+    result = await rank_one(ranking_task, client, {gen.id: gen}, results_path=results_path)
+
+    assert isinstance(result, RankingResult)
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
+
+
+async def test_rank_one_saves_to_failures_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    failures_path = tmp_path / "ranking_failures.jsonl"
+
+    async def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    client.generate_structured = raise_error  # type: ignore[method-assign]
+
+    result = await rank_one(ranking_task, client, {gen.id: gen}, failures_path=failures_path)
+
+    assert isinstance(result, RankingFailure)
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
+
+
+async def test_rank_all_returns_list_of_ranking_results(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    client1, client2 = MockLLMClient(), MockLLMClient()
+    client1.model, client2.model = "client1", "client2"
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking1 = {"ranking": ["A"], "reasoning": "one"}
+    ranking2 = {"ranking": ["A"], "reasoning": "two"}
+    client1.structured_response = StructuredResponse(data=ranking1, raw=orjson.dumps(ranking1).decode())
+    client2.structured_response = StructuredResponse(data=ranking2, raw=orjson.dumps(ranking2).decode())
+
+    results, failures = await rank_all([ranking_task], [gen], clients=[client1, client2])
+
+    assert len(failures) == 0
+    assert len(results) == 2
+    result1, result2 = results
+    assert isinstance(result1, RankingResult)
+    assert isinstance(result2, RankingResult)
+    assert result1.ranking_task_id == result2.ranking_task_id == ranking_task.id
+    assert result1.ranking == result2.ranking == [gen.id]
+    assert result1.author == client1.name
+    assert result2.author == client2.name
+    assert result1.reasoning == "one"
+    assert result2.reasoning == "two"
+
+
+async def test_rank_all_saves_to_results_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    client1, client2 = MockLLMClient(), MockLLMClient()
+    client1.model, client2.model = "client1", "client2"
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking1 = {"ranking": ["A"], "reasoning": "one"}
+    ranking2 = {"ranking": ["A"], "reasoning": "two"}
+    client1.structured_response = StructuredResponse(data=ranking1, raw=orjson.dumps(ranking1).decode())
+    client2.structured_response = StructuredResponse(data=ranking2, raw=orjson.dumps(ranking2).decode())
+    results_path = tmp_path / "rankings.jsonl"
+
+    results, failures = await rank_all([ranking_task], [gen], clients=[client1, client2], results_path=results_path)
+
+    assert len(failures) == 0
+    assert len(results) == 2
+    result1, result2 = results
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result1) + b"\n" + orjson.dumps(result2) + b"\n"
+
+
+async def test_rank_all_saves_to_failures_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    failure_client, result_client = MockLLMClient(), MockLLMClient()
+    failure_client.model, result_client.model = "client1", "client2"
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking = {"ranking": ["A"], "reasoning": "ok"}
+    result_client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+    failures_path = tmp_path / "ranking_failures.jsonl"
+
+    def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    failure_client.generate_structured = raise_error  # type: ignore[method-assign]
+
+    results, failures = await rank_all(
+        [ranking_task], [gen], clients=[failure_client, result_client], failures_path=failures_path
+    )
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    result, failure = results[0], failures[0]
+    assert isinstance(result, RankingResult)
+    assert isinstance(failure, RankingFailure)
+    assert result.author == result_client.name
+    assert failure.ranking_task_id == ranking_task.id
+    assert failure.author == failure_client.name
+    assert failure.error_type == "RuntimeError"
+    assert failure.message == "boom"
+
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(failure) + b"\n"
+
+
+async def test_rank_all_saves_to_results_and_failures_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    failure_client, result_client = MockLLMClient(), MockLLMClient()
+    failure_client.model, result_client.model = "client1", "client2"
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking = {"ranking": ["A"], "reasoning": "ok"}
+    result_client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+    results_path = tmp_path / "rankings.jsonl"
+    failures_path = tmp_path / "ranking_failures.jsonl"
+
+    def raise_error(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom")
+
+    failure_client.generate_structured = raise_error  # type: ignore[method-assign]
+
+    results, failures = await rank_all(
+        [ranking_task],
+        [gen],
+        clients=[failure_client, result_client],
+        results_path=results_path,
+        failures_path=failures_path,
+    )
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    result, failure = results[0], failures[0]
+    with open(results_path, "rb") as f:
+        assert f.read() == orjson.dumps(result) + b"\n"
+    with open(failures_path, "rb") as f:
+        assert f.read() == orjson.dumps(failure) + b"\n"
+
+
+async def test_rank_all_reads_ranking_results_from_results_path(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    client1, client2 = MockLLMClient(), MockLLMClient()
+    client1.model, client2.model = "client1", "client2"
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    results_path = tmp_path / "rankings.jsonl"
+    ranking1 = {"ranking": ["A"], "reasoning": "one"}
+    ranking2 = {"ranking": ["A"], "reasoning": "two"}
+    client1.structured_response = StructuredResponse(data=ranking1, raw=orjson.dumps(ranking1).decode())
+    client2.structured_response = StructuredResponse(data=ranking2, raw=orjson.dumps(ranking2).decode())
+
+    await rank_one(ranking_task, client1, {gen.id: gen}, results_path=results_path)
+
+    # client1 already succeeded; a re-run must skip it (resume) rather than re-rank.
+    changed = {"ranking": ["A"], "reasoning": "changed"}
+    client1.structured_response = StructuredResponse(data=changed, raw=orjson.dumps(changed).decode())
+
+    results, failures = await rank_all([ranking_task], [gen], clients=[client1, client2], results_path=results_path)
+
+    assert len(failures) == 0
+    assert len(results) == 2
+    by_author = {result.author: result for result in results}
+    assert by_author[client1.name].reasoning == "one"  # loaded, not re-ranked
+    assert by_author[client2.name].reasoning == "two"
+
+
+async def test_rank_all_ignores_records_outside_current_universe(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    path = tmp_path / "rankings.jsonl"
+    old = {"ranking": ["A"], "reasoning": "old"}
+    client.structured_response = StructuredResponse(data=old, raw=orjson.dumps(old).decode())
+
+    # Record a result for a *different* ranking task — it must not count toward this run.
+    await rank_one(make_ranking_task(generations={"A": gen.id}), client, {gen.id: gen}, results_path=path)
+    new = {"ranking": ["A"], "reasoning": "new"}
+    client.structured_response = StructuredResponse(data=new, raw=orjson.dumps(new).decode())
+
+    results, failures = await rank_all([ranking_task], [gen], clients=[client], results_path=path)
+
+    assert len(failures) == 0
+    assert len(results) == 1
+    assert results[0].ranking_task_id == ranking_task.id
+    assert results[0].reasoning == "new"  # ranked this run, not the stale loaded record
+
+
+async def test_rank_all_opens_and_closes_clients(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    client = MockLLMClient()
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    ranking = {"ranking": ["A"], "reasoning": "ok"}
+    client.structured_response = StructuredResponse(data=ranking, raw=orjson.dumps(ranking).decode())
+    client.raise_on_enter = True
+
+    with pytest.raises(RuntimeError, match="Enter boom"):
+        await rank_all([ranking_task], [gen], clients=[client])
+
+    client.raise_on_enter = False
+    client.raise_on_exit = True
+
+    with pytest.raises(RuntimeError, match="Exit boom"):
+        await rank_all([ranking_task], [gen], clients=[client])

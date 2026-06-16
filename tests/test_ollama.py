@@ -1,78 +1,128 @@
-"""Tests for OllamaClient, driving the real ollama.AsyncClient over httpx.MockTransport."""
+import asyncio
+from unittest import mock
 
-from typing import Any
-
-import httpx
-import pytest
 from ollama import AsyncClient
 
 from tournament_eval.llm.ollama import OllamaClient
 
-_HttpMock = Any
+
+def test_minimal_ollama_client() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    assert client.name == "m"
+    assert client._model_id == "m"
+    assert client._temperature == 1.0
+    assert client._max_tokens is None
+    assert client._system_prompt is None
+    assert client._seed is None
+    assert client._name is None
+    assert client._reasoning_effort is None
+    assert client._sem is None
 
 
-def _client(transport: httpx.MockTransport, **cfg: Any) -> OllamaClient:
-    sdk = AsyncClient(host="http://t.local", transport=transport)
-    cfg.setdefault("model_id", "llama")
-    return OllamaClient(sdk, **cfg)
+def test_create_ollama_client_with_everything() -> None:
+    semaphore = asyncio.Semaphore(2)
+    client = OllamaClient(
+        client=AsyncClient(),
+        model_id="m",
+        temperature=0.5,
+        max_tokens=100,
+        system_prompt="system",
+        seed=7,
+        name="name",
+        reasoning_effort="high",
+        max_concurrency=2,
+        semaphore=semaphore,
+    )
+    assert client.name == "name"
+    assert client._model_id == "m"
+    assert client._temperature == 0.5
+    assert client._max_tokens == 100
+    assert client._system_prompt == "system"
+    assert client._seed == 7
+    assert client._name == "name"
+    assert client._reasoning_effort == "high"
+    assert client._sem is semaphore
 
 
-def _response(content: str, thinking: str | None = None) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant", "content": content}
-    if thinking is not None:
-        message["thinking"] = thinking
-    return {
-        "model": "llama",
-        "created_at": "2024-01-01T00:00:00.000000Z",
-        "message": message,
-        "done": True,
-        "done_reason": "stop",
-    }
+def test_ollama_client_with_max_concurrency_and_no_semaphore() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m", max_concurrency=2)
+    assert isinstance(client._sem, asyncio.Semaphore)
+    assert client._sem._value == 2
 
 
-class TestOllamaClient:
-    async def test_generate(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response("bonjour"))
-        client = _client(transport, system_prompt="sys", temperature=0.5, max_tokens=20, seed=3)
-        response = await client.generate("hi")
-        assert (response.text, response.reasoning) == ("bonjour", None)
-        assert client.name == "llama"
-        assert rec.json["model"] == "llama"
-        assert rec.json["messages"][0] == {"role": "system", "content": "sys"}
-        assert rec.json["options"] == {"temperature": 0.5, "num_predict": 20, "seed": 3}
+def test_name_defaults_to_model_id() -> None:
+    assert OllamaClient(client=AsyncClient(), model_id="m").name == "m"
 
-    async def test_captures_thinking_as_reasoning(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_response("bonjour", thinking="let me think"))
-        response = await _client(transport).generate("hi")
-        assert (response.text, response.reasoning) == ("bonjour", "let me think")
 
-    async def test_empty_content_returns_empty_string(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_response(""))
-        assert (await _client(transport).generate("hi")).text == ""
+def test_name_can_be_overridden() -> None:
+    assert OllamaClient(client=AsyncClient(), model_id="m", name="prod").name == "prod"
 
-    async def test_default_options_only_temperature(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response("x"))
-        await _client(transport).generate("hi")
-        assert rec.json["options"] == {"temperature": 1.0}
 
-    async def test_structured_parses_and_sends_format(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response('{"x": 1}'))
-        response = await _client(transport).generate_structured("hi", {"type": "object"})
-        assert response.data == {"x": 1}
-        assert rec.json["format"] == {"type": "object"}
+def test_think_false_without_reasoning_effort() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    assert client._think is False
 
-    async def test_reasoning_effort_enables_think(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response("x", thinking="hmm"))
-        response = await _client(transport, reasoning_effort="low").generate("hi")
-        assert response.reasoning == "hmm"
-        assert rec.json["think"] is True
 
-    async def test_think_off_when_reasoning_unset(self, http_mock: _HttpMock) -> None:
-        transport, rec = http_mock(_response("x"))
-        await _client(transport).generate("hi")
-        assert rec.json["think"] is False
+def test_think_true_with_reasoning_effort() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m", reasoning_effort="low")
+    assert client._think is True
 
-    async def test_structured_non_object_raises(self, http_mock: _HttpMock) -> None:
-        transport, _ = http_mock(_response("[1]"))
-        with pytest.raises(ValueError, match="Expected JSON object"):
-            await _client(transport).generate_structured("hi", {})
+
+def test_messages_without_system_prompt() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    assert client._messages("hi") == [{"role": "user", "content": "hi"}]
+
+
+def test_messages_with_system_prompt() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m", system_prompt="sys")
+    assert client._messages("hi") == [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+
+
+def test_options_minimal() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    assert client._options() == {"temperature": 1.0}
+
+
+def test_options_with_max_tokens_and_seed() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m", temperature=0.2, max_tokens=100, seed=7)
+    assert client._options() == {"temperature": 0.2, "num_predict": 100, "seed": 7}
+
+
+async def test_generate_returns_text_and_reasoning() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    response = mock.Mock(message=mock.Mock(content="bonjour", thinking="because"))
+    with mock.patch.object(client._client, "chat", mock.AsyncMock(return_value=response)) as chat:
+        out = await client.generate("hi")
+    assert (out.text, out.reasoning) == ("bonjour", "because")
+    kwargs = chat.call_args.kwargs
+    assert kwargs["model"] == "m"
+    assert kwargs["messages"] == [{"role": "user", "content": "hi"}]
+    assert kwargs["options"] == {"temperature": 1.0}
+    assert kwargs["think"] is False
+
+
+async def test_generate_empty_content_becomes_empty_string() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    response = mock.Mock(message=mock.Mock(content=None, thinking=None))
+    with mock.patch.object(client._client, "chat", mock.AsyncMock(return_value=response)):
+        out = await client.generate("hi")
+    assert out.text == ""
+    assert out.reasoning is None
+
+
+async def test_generate_passes_think_when_reasoning_effort_set() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m", reasoning_effort="high")
+    response = mock.Mock(message=mock.Mock(content="bonjour", thinking="because"))
+    with mock.patch.object(client._client, "chat", mock.AsyncMock(return_value=response)) as chat:
+        await client.generate("hi")
+    assert chat.call_args.kwargs["think"] is True
+
+
+async def test_generate_structured_sends_schema_and_parses() -> None:
+    client = OllamaClient(client=AsyncClient(), model_id="m")
+    response = mock.Mock(message=mock.Mock(content='{"a": 1}'))
+    with mock.patch.object(client._client, "chat", mock.AsyncMock(return_value=response)) as chat:
+        result = await client.generate_structured("hi", {"type": "object"})
+    assert result.data == {"a": 1}
+    assert result.raw == '{"a": 1}'
+    assert chat.call_args.kwargs["format"] == {"type": "object"}

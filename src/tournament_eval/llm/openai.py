@@ -12,7 +12,7 @@ from typing import Unpack
 
 import orjson
 from openai import AsyncOpenAI
-from openai.types.responses import Response, ResponseOutputMessage, ResponseOutputRefusal, ResponseReasoningItem
+from openai.types.responses import ResponseOutputRefusal
 from openai.types.shared.reasoning_effort import ReasoningEffort as OpenAIReasoningEffort
 from openai.types.shared_params import Reasoning
 
@@ -60,32 +60,9 @@ class OpenAIClient:
 
     @property
     def _reasoning(self) -> Reasoning | None:
-        # ``summary="auto"`` is what surfaces a trace; the raw chain isn't exposed.
         if self._reasoning_effort is None:
             return None
         return {"effort": _OPENAI_EFFORT[self._reasoning_effort], "summary": "auto"}
-
-    def _reasoning_text(self, response: Response) -> str | None:
-        summaries = [
-            part.text
-            for item in response.output
-            if isinstance(item, ResponseReasoningItem)
-            for part in item.summary
-        ]
-        return "\n".join(summaries) or None
-
-    def _text(self, response: Response) -> str:
-        """Return the response text, raising if the model refused.
-
-        ``output_text`` silently drops refusal parts (a refusal yields ``""``),
-        so scan the output for one first and surface it as an error instead.
-        """
-        for item in response.output:
-            if isinstance(item, ResponseOutputMessage):
-                for part in item.content:
-                    if isinstance(part, ResponseOutputRefusal):
-                        raise ValueError(f"Model refused to respond: {part.refusal}")
-        return response.output_text
 
     async def generate(self, prompt: str) -> GenerationResponse:
         async with concurrency_guard(self._sem):
@@ -96,8 +73,14 @@ class OpenAIClient:
                 temperature=self._temperature,
                 max_output_tokens=self._max_tokens,
                 reasoning=self._reasoning,
+                stream=False,
             )
-        return GenerationResponse(text=self._text(response), reasoning=self._reasoning_text(response))
+        for output in response.output:
+            if isinstance(output, ResponseOutputRefusal):
+                raise ValueError(f"model refused to reply: {response.output_text}")
+        return GenerationResponse(
+            text=response.output_text, reasoning=response.reasoning.summary if response.reasoning else None
+        )
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         async with concurrency_guard(self._sem):
@@ -108,6 +91,7 @@ class OpenAIClient:
                 temperature=self._temperature,
                 max_output_tokens=self._max_tokens,
                 reasoning=self._reasoning,
+                stream=False,
                 text={
                     "format": {
                         "type": "json_schema",
@@ -117,8 +101,5 @@ class OpenAIClient:
                     }
                 },
             )
-        raw = self._text(response)
-        parsed = orjson.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
+        raw = response.output_text
+        return StructuredResponse(data=orjson.loads(raw), raw=raw)

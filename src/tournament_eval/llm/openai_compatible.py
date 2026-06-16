@@ -49,8 +49,8 @@ class OpenAICompatibleClientConfig(GenerationConfig):
     Note that this should not contain the ``/chat/completions`` path, for example
     for a local server you control (e.g. ``mlx_lm.server``), this should
     point to ``http://localhost:8080/v1``."""
-    api_key: Required[str]
-    """API key. Local servers usually ignore it so can be set to any non-empty string."""
+    api_key: NotRequired[str]
+    """API key. Local servers usually ignore it so not required."""
     retry_count: NotRequired[int]
     """Total attempts for a failed request (default 3)."""
     timeout: NotRequired[float]
@@ -80,7 +80,7 @@ class OpenAICompatibleClient:
     ) -> None:
         self._model_id = kwargs["model_id"]
         self._base_url = kwargs["base_url"]
-        self._api_key = kwargs["api_key"]
+        self._api_key = kwargs.get("api_key")
         self._temperature = kwargs.get("temperature", 1.0)
         self._max_tokens = kwargs.get("max_tokens")
         self._system_prompt = kwargs.get("system_prompt")
@@ -100,7 +100,7 @@ class OpenAICompatibleClient:
 
     @property
     def _endpoint_url(self) -> str:
-        return f"{self._base_url}/chat/completions"
+        return f"{self._base_url.rstrip('/')}/chat/completions"
 
     async def __aenter__(self) -> Self:
         if self._http_client is None:
@@ -162,8 +162,9 @@ class OpenAICompatibleClient:
 
     async def _make_request(self, headers: dict[str, str], body: dict[str, object]) -> dict[str, object]:
         http = self._require_http()
+        retry_count = max(self._retry_count, 1)  # to ensure we at least make one attempt
 
-        for attempt in range(self._retry_count):
+        for attempt in range(retry_count):
             try:
                 async with concurrency_guard(self._sem):
                     response = await http.post(self._endpoint_url, json=body, headers=headers)
@@ -179,27 +180,33 @@ class OpenAICompatibleClient:
                     or exc.response.status_code == 429
                     or exc.response.status_code >= 500
                 )
-                if not retryable or attempt == self._retry_count - 1:
+                if not retryable or attempt == retry_count - 1:
                     raise
                 await asyncio.sleep(2**attempt)
 
-        raise RuntimeError("retry loop ended without a request")  # only reachable if retry_count < 1
+        raise RuntimeError("You somehow bypassed the request retry loop... How?")  # pragma: no cover
 
     def _message(self, body: dict[str, object]) -> dict[str, object]:
         choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ValueError("OpenAI response missing a non-empty 'choices' list")
+        if choices is None:
+            raise ValueError("OpenAI response missing a 'choices' list")
+        if not isinstance(choices, list):
+            raise ValueError("OpenAI response 'choices' is not a list")
+        if not choices:
+            raise ValueError("OpenAI response 'choices' is empty")
         first = choices[0]
         if not isinstance(first, dict):
-            raise ValueError("OpenAI 'choices[0]' is not an object")
+            raise ValueError("OpenAI response 'choices[0]' is not an object")
         message = first.get("message")
-        if not isinstance(message, dict):
+        if message is None:
             raise ValueError("OpenAI response missing 'message'")
+        if not isinstance(message, dict):
+            raise ValueError("OpenAI response 'message' is not an object")
         return message
 
-    def _extract_text(self, message: dict[str, object]) -> str:
+    def _extract_response(self, message: dict[str, object]) -> str:
         refusal = message.get("refusal")
-        if isinstance(refusal, str):
+        if refusal:
             raise ValueError(f"Model refused to respond: {refusal}")
         content = message.get("content")
         if not isinstance(content, str):
@@ -217,14 +224,11 @@ class OpenAICompatibleClient:
         headers = self._build_headers()
         body = self._build_payload(prompt)
         message = self._message(await self._make_request(headers, body))
-        return GenerationResponse(text=self._extract_text(message), reasoning=self._extract_reasoning(message))
+        return GenerationResponse(text=self._extract_response(message), reasoning=self._extract_reasoning(message))
 
     async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:
         headers = self._build_headers()
         body = self._build_payload(prompt, schema=schema)
         message = self._message(await self._make_request(headers, body))
-        raw = self._extract_text(message)
-        parsed = orjson.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
+        raw = self._extract_response(message)
+        return StructuredResponse(data=orjson.loads(raw), raw=raw)

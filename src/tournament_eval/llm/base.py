@@ -73,7 +73,7 @@ class GenerationConfig(TypedDict):
     temperature: NotRequired[float]
     """Sampling temperature (clients default to 1.0)."""
     max_tokens: NotRequired[int]
-    """Cap on generated tokens; omitted (provider default) when unset.  Note this
+    """Cap on generated tokens; omitted (provider default) when unset. Note this
     also bounds reasoning budget, so a low value can truncate output."""
     system_prompt: NotRequired[str]
     """Optional system-level prompt."""
@@ -92,8 +92,10 @@ class GenerationConfig(TypedDict):
 class LLMClient(Protocol):
     """The minimal contract every client (built-in or SDK-backed) satisfies."""
 
-    name: str
-    """Model identifier, used as the ``author`` on every result it produces."""
+    @property
+    def name(self) -> str:
+        """Model identifier, used as the ``author`` on every result it produces."""
+        ...
 
     async def generate(self, prompt: str) -> GenerationResponse:
         """Send a plain-text prompt and return the answer plus any reasoning trace."""

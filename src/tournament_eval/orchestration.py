@@ -49,7 +49,7 @@ import asyncio
 import contextlib
 import random
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 from tournament_eval import persistence
@@ -69,29 +69,6 @@ from tournament_eval.ranking import (
 )
 
 _DEFAULT_TEMPLATE: RankingTemplate = DefaultRankingTemplate()
-
-
-def _completed_pairs[T](
-    records: list[T],
-    *,
-    key: Callable[[T], tuple[uuid.UUID, str]],
-    valid_ids: set[uuid.UUID],
-    valid_authors: set[str],
-) -> dict[tuple[uuid.UUID, str], T]:
-    """Index already-succeeded records by their ``(task/ranking-task id, author)``.
-
-    The skip set for resume: any pair present here is left un-run, and the values
-    are the loaded successes the batch returns alongside what it produces.  Pairs
-    outside the current universe (a task dropped from ``tasks``, or an author no
-    longer among ``clients``) are filtered out, and duplicates collapse by pair, so
-    the result stays a clean partition of every (task, client) pair.
-    """
-    done: dict[tuple[uuid.UUID, str], T] = {}
-    for record in records:
-        left, author = key(record)
-        if left in valid_ids and author in valid_authors:
-            done[(left, author)] = record
-    return done
 
 
 async def _open_clients(clients: list[LLMClient], stack: contextlib.AsyncExitStack) -> list[LLMClient]:
@@ -145,7 +122,7 @@ async def generate_one(
         response = await client.generate(task.generation_prompt)
         result = GenerationResult(
             id=uuid.uuid4(),
-            task_id=task.id,
+            generation_task_id=task.id,
             generation_prompt=task.generation_prompt,
             output=response.text,
             reasoning=response.reasoning,
@@ -153,7 +130,7 @@ async def generate_one(
         )
     except Exception as err:
         result = GenerationFailure(
-            task_id=task.id,
+            generation_task_id=task.id,
             author=client.name,
             error_type=type(err).__name__,
             message=str(err),
@@ -212,15 +189,15 @@ async def generate_all(
         model's answer verbatim (no cleaning); ``reasoning`` carries the trace when
         the provider surfaced one.
     """
-    clients = list(clients)
+    clients = list(clients)  # In case we get given a generator.
     loaded = persistence.read_generation_result_file(results_path) if results_path is not None else []
-    done = _completed_pairs(
-        loaded,
-        key=lambda r: (r.task_id, r.author),
-        valid_ids={task.id for task in tasks},
-        valid_authors={client.name for client in clients},
-    )
-
+    valid_ids = {task.id for task in tasks}
+    valid_authors = {client.name for client in clients}
+    done: dict[tuple[uuid.UUID, str], GenerationResult] = {
+        (result.generation_task_id, result.author): result
+        for result in loaded
+        if result.generation_task_id in valid_ids and result.author in valid_authors
+    }
     async with contextlib.AsyncExitStack() as stack:
         # Open any clients that own resources (e.g. the built-in httpx pool) for
         # the duration of the batch, closing them all on exit; SDK clients pass through.
@@ -276,6 +253,9 @@ def build_ranking_task(
     """
     if not results:
         raise ValueError("build_ranking_task needs at least one GenerationResult")
+    ids = {result.generation_task_id for result in results}
+    if len(ids) != 1:
+        raise ValueError(f"GenerationResults must all be for the same task; got {ids}")
 
     shuffled = list(results)
     rng = random.Random(random_seed)
@@ -284,7 +264,7 @@ def build_ranking_task(
     alias_map: dict[str, uuid.UUID] = {alias_for_index(i): result.id for i, result in enumerate(shuffled)}
     ranking_task = RankingTask(
         id=uuid.uuid4(),
-        generation_task_id=results[0].task_id,
+        generation_task_id=results[0].generation_task_id,
         ranking_prompt=ranking_prompt,
         generations=alias_map,
     )
@@ -341,7 +321,7 @@ def build_ranking_tasks(
     """
     results_by_task: dict[uuid.UUID, list[GenerationResult]] = {}
     for result in generation_results:
-        results_by_task.setdefault(result.task_id, []).append(result)
+        results_by_task.setdefault(result.generation_task_id, []).append(result)
 
     existing = {}
     if tasks_path is not None:
@@ -479,12 +459,13 @@ async def rank_all(
     clients = list(clients)
     generation_lookup = {result.id: result for result in generation_results}
     loaded = persistence.read_ranking_result_file(results_path) if results_path is not None else []
-    done = _completed_pairs(
-        loaded,
-        key=lambda r: (r.ranking_task_id, r.author),
-        valid_ids={ranking_task.id for ranking_task in ranking_tasks},
-        valid_authors={client.name for client in clients},
-    )
+    valid_ids = {ranking_task.id for ranking_task in ranking_tasks}
+    valid_authors = {client.name for client in clients}
+    done: dict[tuple[uuid.UUID, str], RankingResult] = {
+        (result.ranking_task_id, result.author): result
+        for result in loaded
+        if result.ranking_task_id in valid_ids and result.author in valid_authors
+    }
 
     async with contextlib.AsyncExitStack() as stack:
         # Open resource-owning clients for the batch (see generate_all); SDK clients pass through.

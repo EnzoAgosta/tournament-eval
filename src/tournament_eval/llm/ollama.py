@@ -97,7 +97,4 @@ class OllamaClient:
                 think=self._think,
             )
         raw = response.message.content or ""
-        parsed = orjson.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
-        return StructuredResponse(data=parsed, raw=raw)
+        return StructuredResponse(data=orjson.loads(raw), raw=raw)

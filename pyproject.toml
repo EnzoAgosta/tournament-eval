@@ -36,6 +36,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
+    "types-boto3-custom",
 ]
 
 [tool.ruff]
@@ -74,3 +75,6 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 files = ["src"]
+
+[tool.uv.sources]
+types-boto3-custom = { path = "vendored/types_boto3_custom-1.43.32-py3-none-any.whl" }
