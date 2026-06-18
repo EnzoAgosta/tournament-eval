@@ -1,8 +1,8 @@
 """Circular ranking for language models, plus clean primitives for wiring LLMs together.
 
-Models generate outputs, then a pool of judges rank them — contestants and judges are
+Models generate outputs, then a pool of rankers rank them — contestants and rankers are
 independent lists you pass in.  Bias becomes measurable signal instead of a single
-grader's hidden assumption.
+ranker's hidden assumption.
 """
 
 import importlib

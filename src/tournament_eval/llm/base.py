@@ -83,8 +83,9 @@ class GenerationConfig(TypedDict):
     """Reasoning/thinking depth, when the model supports it.  Unset leaves the
     provider default (reasoning off for most).  Each client maps it onto its
     provider's native control — Anthropic adaptive thinking + ``output_config``
-    effort, OpenAI Responses ``reasoning.effort``, Ollama think mode, the
-    OpenAI-compatible ``reasoning_effort`` field (best-effort).  Turning it on is
+    effort (over the SDK and on Bedrock), OpenAI Responses ``reasoning.effort``,
+    Ollama think mode, the OpenAI-compatible ``reasoning_effort`` field
+    (best-effort); Bedrock gpt-oss surfaces its trace inline.  Turning it on is
     also what makes :attr:`GenerationResponse.reasoning` populate for those
     clients that can return a trace."""
 
@@ -94,7 +95,7 @@ class LLMClient(Protocol):
 
     @property
     def name(self) -> str:
-        """Model identifier, used as the ``author`` on every result it produces."""
+        """Author label for this client (often the model id); used as the ``author`` on every result it produces."""
         ...
 
     async def generate(self, prompt: str) -> GenerationResponse:

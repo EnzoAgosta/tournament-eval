@@ -159,8 +159,9 @@ async def generate_all(
     caller-side ``async with`` is needed — pass clients and go.
 
     **Resume is automatic** when ``results_path`` is set: the file is read back
-    first and every ``(task_id, author)`` pair already recorded there is skipped,
-    so re-running the script finishes an interrupted run.  Only *successes* are
+    first and every ``(generation_task_id, author)`` pair already recorded there is
+    skipped, so re-running the script finishes an interrupted run.  Records loaded for
+    a task or client absent from the current run are ignored.  Only *successes* are
     skipped; a pair that previously failed is retried.
 
     Parameters
@@ -231,7 +232,7 @@ def build_ranking_task(
 
     The ``results`` are shuffled before aliases (A, B, C...) are assigned, so a
     model's position bias (e.g. always picking "A") doesn't track authorship.  The
-    originating task is taken from ``results[0].task_id`` (all results must be for
+    originating task is taken from ``results[0].generation_task_id`` (all results must be for
     the same task) and recorded as the RankingTask's ``generation_task_id``.
 
     Parameters
@@ -423,7 +424,8 @@ async def rank_all(
 
     **Resume is automatic** when ``results_path`` is set, exactly as in
     :func:`generate_all` but keyed on ``(ranking_task_id, author)``: already-recorded
-    successes are skipped and returned alongside what's produced this call.
+    successes are skipped and returned alongside what's produced this call.  Records
+    loaded for a ranking task or client absent from the current run are ignored.
 
     Parameters
     ----------

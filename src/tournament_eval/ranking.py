@@ -58,7 +58,7 @@ class RankingTemplate(abc.ABC):
     * :meth:`schema` — the JSON schema its response is constrained to.
     * :meth:`parse` — validation of that response into a :class:`ParsedRanking`.
 
-    Subclass to customise ranking.  Adding context (a grading rubric, domain
+    Subclass to customise ranking.  Adding context (a ranking rubric, domain
     notes) is a one-method override of :meth:`render`; each candidate is passed as
     its full :class:`GenerationResult`, so ``.output``, ``.reasoning``,
     ``.generation_prompt`` and ``.metadata`` are all in reach.  Changing the

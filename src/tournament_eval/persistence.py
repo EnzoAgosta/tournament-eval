@@ -11,7 +11,8 @@ per stream::
     ranking_failures.jsonl     # RankingFailures
 
 There is no directory layout or filename convention here: nothing is sharded by
-author, because each record already carries its ``author``/``task_id``, so a flat
+author, because each record already carries its ``author`` and
+``generation_task_id``/``ranking_task_id``, so a flat
 file is fully reconstructable — group or filter on read.  Where the pipeline
 writes is whatever path you pass to ``generate_all`` / ``rank_all`` /
 ``build_ranking_tasks``.
