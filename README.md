@@ -39,7 +39,7 @@ The framework only cares about ordinal rankings. The models can be GPT, Claude, 
 **Order-invariant aggregation.**
 There's no Elo, no match history, no score that drifts as rankings accumulate. Every ranking is independent. Once you have the set of rankings, aggregating them is order-invariant — Borda count, Condorcet, Bradley–Terry, whatever you choose — and the result doesn't depend on the order you feed the rankings in.
 
-> **A note on determinism.** Generation itself is *not* reproducible — models are sampled at a temperature, so two runs can differ. The order-invariance is a property of the aggregation math over a fixed set of rankings, not of the model outputs. If you need reproducible generation, pin temperature/seed at the client level.
+> **A note on determinism.** Generation itself is *not* reproducible — models are sampled at a temperature, so two runs can differ. The order-invariance is a property of the aggregation math over a fixed set of rankings, not of the model outputs. If you need reproducible generation, pin temperature/seed on your agent's model settings.
 
 **Full reasoning capture.**
 Every ranker's reasoning is preserved alongside its ranking, so you can run the tournament once and analyze it many ways — which model values fluency over accuracy, which is most self-consistent, which one's reasoning tracks human preference. The rankings are the output; the reasoning is the audit trail.
@@ -54,7 +54,7 @@ If you've ranked models before, you've probably reached for one of two tools. Th
 
 ### Contestants and rankers are separate axes
 
-`generate_all` and `rank_all` each take their own list of clients, so the two roles are fully decoupled:
+`generate_all` and `rank_all` each take their own list of agents, so the two roles are fully decoupled:
 
 - **N candidates ranked by the same N models** — the full circular tournament.
 - **2 candidates, 15 rankers** — a small head-to-head settled by a large, diverse panel.
@@ -66,49 +66,81 @@ Same pipeline, same data model. Who generates and who ranks are just two lists.
 ## Install
 
 ```bash
-uv add tournament-eval                     # core — the built-in httpx client, no SDKs
-uv add tournament-eval --extra openai      # + the official OpenAI SDK client
-uv add tournament-eval --extra anthropic   # + the Anthropic SDK client
-uv add tournament-eval --extra ollama      # + the Ollama SDK client
-uv add tournament-eval --extra bedrock     # + Amazon Bedrock (boto3)
+uv add tournament-eval
 ```
 
-The core install talks to anything speaking the OpenAI `/chat/completions` protocol over HTTP — local servers included — with no extra dependencies. Reach for an extra only when you want a specific provider's official SDK.
+That's the whole install. The only core dependency is [`pydantic-ai-slim`](https://ai.pydantic.dev), the lightweight core of [Pydantic AI](https://ai.pydantic.dev) — no provider SDKs are pulled in by default.
 
-## The clients
+### Adding providers
 
-Everything the pipeline needs from a model is one tiny contract — the `LLMClient` **Protocol**: a `name`, and async `generate` / `generate_structured`. Anything that satisfies it works; there's no base class to inherit.
+`tournament-eval` talks to models through **Pydantic AI agents**, so the providers available to you are exactly Pydantic AI's. Each provider needs its SDK on your path, which you add as an *extra* matching the Pydantic AI provider group:
 
-The design principle is **lean on the providers' own SDKs**. Rather than re-implement each provider's auth, endpoints, retries, and wire quirks, the SDK-backed clients wrap a native client *you* construct and own — so you configure the provider its canonical way, and the adapter just maps it onto the contract.
+```bash
+uv add tournament-eval --extra anthropic    # + the Anthropic SDK (Claude)
+uv add tournament-eval --extra openai       # + the OpenAI SDK
+uv add tournament-eval --extra google       # + Google GenAI (Gemini)
+uv add tournament-eval --extra bedrock      # + Amazon Bedrock (boto3)
+```
 
-| Client | Install | Wraps | Notes |
-|--------|---------|-------|-------|
-| `OpenAICompatibleClient` | core | — (httpx) | any OpenAI `/chat/completions` server: local (Ollama, mlx_lm, vLLM, llama.cpp) or the OpenAI API |
-| `OpenAIClient` | `[openai]` | `openai.AsyncOpenAI` | the official SDK, via the Responses API |
-| `AnthropicClient` | `[anthropic]` | `anthropic.AsyncAnthropic` | Messages API; native json-schema structured output |
-| `OllamaClient` | `[ollama]` | `ollama.AsyncClient` | structured output via Ollama's grammar-constrained `format` |
-| `AnthropicBedrockClient`, `NovaBedrockClient`, `TitanBedrockClient`, `LlamaBedrockClient`, `MistralBedrockClient`, `CohereBedrockClient`, `JambaBedrockClient`, `PalmyraBedrockClient`, `GptOssBedrockClient` | `[bedrock]` | a boto3 `bedrock-runtime` client | one per model family — **Bedrock = boto**, auth is the AWS credential chain |
+Pydantic AI supports more (Groq, Mistral, Cohere, xAI, OpenRouter, Hugging Face, Ollama, Cerebras, Outlines, Deepseek, …). Add the SDK you need to your project the way Pydantic AI documents it and the corresponding model class is reachable — `tournament-eval` doesn't gate the list.
 
-The built-in client takes plain keyword config; the SDK-backed ones take an injected client plus the same shared generation knobs:
+## The LLM layer is Pydantic AI
+
+This library owns the **methodology** — the tasks, the aliasing, the resume, the persistence, the ranking contract — and leans on Pydantic AI for everything LLM: providers, auth, retries, streaming, structured output, reasoning/thinking, usage tracking. You don't configure models through `tournament-eval`; you construct and own `pydantic_ai.Agent` instances the Pydantic AI way and hand them in.
+
+The pipeline needs two kinds of agent:
+
+- **Generation agents** — `Agent(model, output_type=str)`. They produce the contestant outputs.
+- **Ranking agents** — `Agent(model, output_type=template.response_model)`. They produce a ranking. The `output_type` is the ranking template's pydantic model (see [Customizing the ranking](#customizing-the-ranking)).
 
 ```python
+from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.bedrock import BedrockConverseModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.bedrock import BedrockProvider
+
 import boto3
-from anthropic import AsyncAnthropic
-from tournament_eval import AnthropicClient, AnthropicBedrockClient
 
-# Anthropic's first-party API, via the official SDK (you own auth + config):
-claude = AnthropicClient(AsyncAnthropic(api_key="..."), model_id="claude-sonnet-4-6")
+from tournament_eval import DefaultRankingTemplate
 
-# Claude on Bedrock, via boto3 (auth = the AWS credential chain, handled by boto):
-claude_bedrock = AnthropicBedrockClient(
-    boto3.client("bedrock-runtime", region_name="us-east-1"),
-    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+template = DefaultRankingTemplate()
+
+# A generation agent — plain text out.
+claude_gen = Agent(
+    AnthropicModel("claude-sonnet-4-6", provider=AnthropicProvider(api_key="...")),
+    output_type=str,
+)
+
+# A ranking agent — its output_type is the template's response model.
+claude_rank = Agent(
+    AnthropicModel("claude-sonnet-4-6", provider=AnthropicProvider(api_key="...")),
+    output_type=template.response_model,
+)
+
+# Claude on Bedrock: the model is configured the Pydantic AI way (Converse API),
+# so auth is boto's credential chain and every Bedrock family is covered.
+bedrock_rank = Agent(
+    BedrockConverseModel(
+        "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        provider=BedrockProvider(bedrock_client=boto3.client("bedrock-runtime", region_name="us-east-1")),
+    ),
+    output_type=template.response_model,
 )
 ```
 
-All clients share the same generation config — `model_id`, optional `name` (the label used as `author`), `temperature`, `max_tokens`, `system_prompt`, `max_concurrency`, `reasoning_effort`. `reasoning_effort` (`low`/`medium`/`high`/`xhigh`/`max`) is the provider-agnostic reasoning dial: each client maps it onto its backend (Anthropic adaptive thinking + effort — on the first-party API and on Bedrock; OpenAI Responses reasoning effort; Ollama think mode; the OpenAI-compatible `reasoning_effort` field — best-effort; Bedrock gpt-oss surfaces its trace inline), and turning it on is what populates the captured `reasoning` trace. `xhigh`/`max` are Anthropic's full range; other backends clamp down to their ceiling. A model with no reliable structured output (most Bedrock families over the Invoke API fall back to best-effort prompt-injection) makes a fine *contestant* even if it's a flaky *ranker* — which is exactly why the two roles are separate lists.
+Everything about the model — temperature, max tokens, system prompt/instructions, thinking/`reasoning_effort`, retries, concurrency — is configured on the agent/model the Pydantic AI way and is outside this library's surface. See the [Pydantic AI docs](https://ai.pydantic.dev) for the full set.
 
-Adding a provider is implementing the three-method Protocol — no framework surgery.
+### Author labels
+
+Each result carries an `author` — the label used for de-anonymization and the resume key. It's resolved as **`agent.name` if set, else the model name**. Distinct models get distinct authors automatically; if you run the *same* model twice with different config (e.g. one model at two temperatures), set distinct `agent.name=` on each so they don't collide:
+
+```python
+hot = Agent(model, output_type=str, name="gpt-4o-temp0.7")
+cold = Agent(model, output_type=str, name="gpt-4o-temp0.0")
+```
+
+`generate_all` / `rank_all` check for author collisions up front and raise rather than silently overwriting results.
 
 ## How it works
 
@@ -116,27 +148,29 @@ The pipeline is three async functions, each a clean stage:
 
 | Stage | Function | In → Out |
 |-------|----------|----------|
-| Generate | `generate_all(tasks, clients)` | tasks × clients → `GenerationResult`s |
+| Generate | `generate_all(tasks, agents)` | tasks × agents → `GenerationResult`s |
 | Build | `build_ranking_tasks(tasks, generations, prompt)` | generations grouped per task, aliased → `RankingTask`s |
-| Rank | `rank_all(ranking_tasks, generations, clients)` | ranking tasks × clients → `RankingResult`s |
+| Rank | `rank_all(ranking_tasks, generations, agents, template=...)` | ranking tasks × agents → `RankingResult`s |
 
-Each stage fans its work out concurrently with `asyncio.gather`, and `generate_all` / `rank_all` open and close any resource-owning clients (like the built-in httpx client) for the batch themselves — no caller-side `async with`. **Failures aren't thrown** — each stage returns a `(results, failures)` pair, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing id, the `author`, and the error type and message. One model timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
+Each stage fans its work out concurrently with `asyncio.gather` and calls `agent.run` once per pair. There's no client lifecycle to manage — `agent.run` is a plain coroutine. **Failures aren't thrown** — each stage returns a `(results, failures)` pair, where every failure is a typed record (`GenerationFailure` / `RankingFailure`) carrying the failing id, the `author`, and the error type and message. One agent timing out or returning garbage doesn't sink the run; it lands in `failures` for you to inspect or retry.
 
-Ranking responses are validated strictly: the ranking must list every candidate exactly once — no unknown aliases, no duplicates, no missing entries, no ties. A malformed ranking is a failure, not a silent best guess.
+Ranking responses are validated strictly: the static shape of the response is validated by Pydantic AI at the provider (against the template's `response_model`), and the *dynamic* rule — the ranking must list every candidate alias exactly once, no unknowns, no duplicates, no missing entries, no ties — is checked by the template afterward. A malformed ranking is a failure, not a silent best guess.
+
+Every result carries `metadata` with the run's usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests`) from Pydantic AI's `RunUsage` — a kitchen-sink dict that can grow to hold cost (via [`genai-prices`](https://github.com/pydantic/genai-prices)), latency, and more without changing the record shape.
 
 ## Customizing the ranking
 
 How a ranking model is prompted, constrained, and validated lives in a `RankingTemplate` — a single object owning the three pieces that must agree with each other:
 
-- `render(ranking_task, candidates)` — the full prompt the ranking model sees
-- `schema` — the JSON schema its response is constrained to
-- `parse(data, valid_aliases)` — validation into a `ParsedRanking`
+- `response_model` — the pydantic `BaseModel` a ranking agent's `output_type` is set to. Pydantic AI constrains the model's reply to this schema and validates it, so the *static* shape of the verdict is enforced at the provider.
+- `render(ranking_task, candidates)` — the full prompt the ranking model sees.
+- `parse(instance, valid_aliases)` — the *dynamic* alias check (every alias exactly once, drawn from the task's candidates), which can't be expressed in a static schema.
 
 `rank_all` / `rank_one` take a `template=` argument (default `DefaultRankingTemplate`, a strict total order with no ties). By default it shows the ranker the **original task the models answered** — shared across candidates, so it leaks no authorship — followed by the anonymized outputs. To also surface each candidate's **reasoning trace**, flip one flag (off by default, since traces are long and a verbose reasoner can look more thorough than it is):
 
 ```python
 rankings, failures = await rank_all(
-    ranking_tasks, generations, clients, template=DefaultRankingTemplate(include_reasoning=True)
+    ranking_tasks, generations, agents, template=DefaultRankingTemplate(include_reasoning=True)
 )
 ```
 
@@ -154,30 +188,31 @@ class RubricTemplate(DefaultRankingTemplate):
         )
 
 
-rankings, failures = await rank_all(ranking_tasks, generations, clients, template=RubricTemplate())
+rankings, failures = await rank_all(ranking_tasks, generations, agents, template=RubricTemplate())
 ```
 
-Changing the *shape* of the ranking (e.g. allowing ties) means overriding all three methods so the prompt, schema, and parser stay consistent. (`candidates` exposes `.author` — don't render it into the prompt, or you defeat the anonymization.)
+Changing the *shape* of the ranking (e.g. allowing ties) means overriding all three — `response_model`, `render`, and `parse` — so the prompt, the schema, and the parser stay consistent. (`candidates` exposes `.author` — don't render it into the prompt, or you defeat the anonymization.)
 
 ## Concurrency
 
-Every stage fans out with `asyncio.gather`, so by default **every request fires at once**. The concurrency limit lives on the *client*, not the orchestration — because rate limits belong to the provider, not to the tournament.
+Every stage fans out with `asyncio.gather`, so by default **every request fires at once**. The concurrency limit lives on the *agent* (Pydantic AI's `max_concurrency`), not the orchestration — because rate limits belong to the provider, not to the tournament.
 
 ```python
-import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.concurrency import ConcurrencyLimiter
 
-# Per-client limit: at most 4 in-flight requests to this model.
-client = OpenAICompatibleClient(model_id="gpt-4o", base_url="...", api_key="...", max_concurrency=4)
+# Per-agent limit: at most 4 in-flight runs of this agent.
+agent = Agent(model, output_type=str, max_concurrency=4)
 
-# Shared cap: hand the same semaphore to several clients and they draw from one budget.
-sem = asyncio.Semaphore(8)
-clients = [
-    OpenAICompatibleClient(model_id="gpt-4o", base_url="...", api_key="...", semaphore=sem),
-    OpenAICompatibleClient(model_id="gpt-4o-mini", base_url="...", api_key="...", semaphore=sem),
+# Shared cap: hand the same limiter to several agents and they draw from one budget.
+limiter = ConcurrencyLimiter(max_running=8, name="anthropic-pool")
+agents = [
+    Agent(model_a, output_type=str, max_concurrency=limiter),
+    Agent(model_b, output_type=str, max_concurrency=limiter),
 ]
 ```
 
-`max_concurrency` defaults to unbounded — fine for a local server you control, but against a rate-limited hosted API you'll want a conservative value, per-client or as a shared semaphore. The same limit applies whether you call the batch `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one`.
+`max_concurrency` defaults to unbounded — fine for a local server you control, but against a rate-limited hosted API you'll want a conservative value, per-agent or as a shared limiter. The same limit applies whether you call the batch `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one`.
 
 ## Persistence & resume
 
@@ -185,7 +220,7 @@ A tournament is expensive — many model calls — so the pipeline streams every
 
 ```python
 results, failures = await generate_all(
-    tasks, clients,
+    tasks, agents,
     results_path="run/generations.jsonl",
     failures_path="run/generation_failures.jsonl",
 )
@@ -198,7 +233,7 @@ Each write is a single synchronous append, so a process that dies mid-run keeps 
 ```python
 # Run once, get interrupted, run the exact same call again — it picks up where it left off.
 results, failures = await generate_all(
-    tasks, clients,
+    tasks, agents,
     results_path="run/generations.jsonl",
     failures_path="run/generation_failures.jsonl",
 )
@@ -219,7 +254,7 @@ Resolving the data is fair game, though — mapping a ranking's `GenerationResul
 ## Tested and typed
 
 - 100% source coverage; `mypy --strict` and `ruff` clean.
-- The client adapters are exercised offline against their real SDKs and wire formats: the built-in httpx client through `httpx.MockTransport`, Bedrock through botocore's `Stubber` (real request serialization and a real `StreamingBody`), and the SDK-backed clients (OpenAI, Anthropic, Ollama) by patching the SDK's own call boundary and returning its real response types. No live network either way.
+- The orchestration is exercised offline against Pydantic AI's built-in test models (`TestModel`, `FunctionModel`) — no live network, no SDK mocking.
 - Pure async orchestration, no hidden global state.
 
 ```bash
