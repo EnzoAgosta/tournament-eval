@@ -158,6 +158,34 @@ Ranking responses are validated strictly: the static shape of the response is va
 
 Every result carries `metadata` with the run's usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests`) from Pydantic AI's `RunUsage` — a kitchen-sink dict that can grow to hold cost (via [`genai-prices`](https://github.com/pydantic/genai-prices)), latency, and more without changing the record shape.
 
+## Building generation tasks
+
+`generate_all`'s resume is keyed on `(generation_task_id, author)`, so a task's id must stay **stable across reruns** for "just rerun the script" to actually resume. The naive pattern — constructing `GenerationTask(id=uuid.uuid4(), prompt=...)` in a loop — gives every run fresh ids, so resume matches nothing and silently regenerates everything.
+
+`build_generation_tasks` fixes that the same way `build_ranking_tasks` does for ranking: it persists tasks to a file and, on a rerun, reuses the persisted task for any prompt it already has one for (matching by prompt), so ids stay stable. `tasks_path` is **required** — persistence is the whole point.
+
+```python
+from tournament_eval import build_generation_tasks, generate_all
+
+# An open text file is a fine iterable of prompts (strip newlines if they
+# shouldn't be part of the prompt).
+with open("sentences.txt") as f:
+    tasks = build_generation_tasks(
+        (f"Translate this sentence to French. No commentary, no note:\n\n{line.rstrip()}" for line in f),
+        tasks_path="run/generation_tasks.jsonl",
+    )
+
+results, failures = await generate_all(
+    tasks, agents,
+    results_path="run/generations.jsonl",
+    failures_path="run/generation_failures.jsonl",
+)
+```
+
+Rerun that exact script and `build_generation_tasks` reuses the persisted tasks (stable ids), `generate_all` skips the `(task, author)` pairs already done, and only anything new or previously-failed runs again.
+
+Tasks are matched **by prompt**, so duplicate prompts collapse to one task (two identical prompts are one task, not two — and you don't want two identical candidates behind two aliases in a ranking). For deliberate distinct duplicates, construct `GenerationTask` directly (or `build_generation_task` with an explicit `id=`), noting that a random id opts out of resume for that task.
+
 ## Customizing the ranking
 
 How a ranking model is prompted, constrained, and validated lives in a `RankingTemplate` — a single object owning the three pieces that must agree with each other:

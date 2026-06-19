@@ -26,6 +26,8 @@ from tests.conftest import (
 from tournament_eval.models import GenerationFailure, GenerationResult, RankingFailure, RankingResult, RankingTask
 from tournament_eval.orchestration import (
     _resolve_author,
+    build_generation_task,
+    build_generation_tasks,
     build_ranking_task,
     build_ranking_tasks,
     generate_all,
@@ -254,6 +256,106 @@ async def test_generate_all_distinct_name_overrides_model_name(
     assert len(failures) == 0
     assert len(results) == 2
     assert {r.author for r in results} == {"gpt-4o-hot", "gpt-4o-cold"}
+
+
+def test_build_generation_task_stamps_fresh_id() -> None:
+    task = build_generation_task("translate me")
+    assert isinstance(task.id, uuid.UUID)
+    assert task.generation_prompt == "translate me"
+
+
+def test_build_generation_task_uses_explicit_id() -> None:
+    explicit = uuid.uuid4()
+    task = build_generation_task("translate me", id=explicit)
+    assert task.id == explicit
+
+
+def test_build_generation_task_saves_to_tasks_path(tmp_path: Path) -> None:
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    task = build_generation_task("translate me", tasks_path=tasks_path)
+    with open(tasks_path, "rb") as f:
+        assert f.read() == _dumps(task) + b"\n"
+
+
+def test_build_generation_task_no_resume_always_new_id(tmp_path: Path) -> None:
+    # Singular builder never resumes — two calls produce distinct ids even for the
+    # same prompt (resume is a batch concern; use build_generation_tasks for that).
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    t1 = build_generation_task("same prompt", tasks_path=tasks_path)
+    t2 = build_generation_task("same prompt", tasks_path=tasks_path)
+    assert t1.id != t2.id
+    assert tasks_path.read_text().count("\n") == 2
+
+
+def test_build_generation_tasks_returns_tasks_in_order(tmp_path: Path) -> None:
+    prompts = ["one", "two", "three"]
+    tasks = build_generation_tasks(prompts, tasks_path=tmp_path / "generation_tasks.jsonl")
+    assert [t.generation_prompt for t in tasks] == prompts
+    assert all(isinstance(t.id, uuid.UUID) for t in tasks)
+
+
+def test_build_generation_tasks_accepts_an_iterable(tmp_path: Path) -> None:
+    # An open text file (single-pass iterable) works — the typical naive usage.
+    path = tmp_path / "sentences.txt"
+    path.write_text("alpha\nbeta\ngamma\n")
+    with open(path) as f:
+        tasks = build_generation_tasks((line.rstrip() for line in f), tasks_path=tmp_path / "tasks.jsonl")
+    assert [t.generation_prompt for t in tasks] == ["alpha", "beta", "gamma"]
+
+
+def test_build_generation_tasks_requires_tasks_path() -> None:
+    # tasks_path is required — persistence is the whole point (guards the naive
+    # footgun where forgetting the path silently breaks resume).
+    with pytest.raises(TypeError):
+        build_generation_tasks(["one"])  # type: ignore[call-arg]
+
+
+def test_build_generation_tasks_collapses_duplicate_prompts(tmp_path: Path) -> None:
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    tasks = build_generation_tasks(["hello", "world", "hello"], tasks_path=tasks_path)
+    assert len(tasks) == 2  # duplicate "hello" collapsed to one task
+    assert [t.generation_prompt for t in tasks] == ["hello", "world"]
+    assert tasks_path.read_text().count("\n") == 2  # only unique prompts persisted
+
+
+def test_build_generation_tasks_reuses_existing_on_rerun(tmp_path: Path) -> None:
+    # The whole point: ids stay stable across reruns, so generate_all's resume matches.
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    first = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
+    second = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
+    assert [t.id for t in second] == [t.id for t in first]  # same ids, reused
+    assert tasks_path.read_text().count("\n") == 2  # nothing new appended
+
+
+def test_build_generation_tasks_adds_new_prompts_without_touching_existing(tmp_path: Path) -> None:
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    first = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
+    second = build_generation_tasks(["hello", "world", "bye"], tasks_path=tasks_path)
+    # hello/world reused (same ids); bye is new.
+    by_prompt = {t.generation_prompt: t for t in second}
+    assert by_prompt["hello"].id == next(t.id for t in first if t.generation_prompt == "hello")
+    assert by_prompt["world"].id == next(t.id for t in first if t.generation_prompt == "world")
+    assert isinstance(by_prompt["bye"].id, uuid.UUID)
+    assert tasks_path.read_text().count("\n") == 3
+
+
+async def test_build_generation_tasks_resume_end_to_end(tmp_path: Path) -> None:
+    # The flagship promise: build → generate → rerun the exact same script → resume.
+    tasks_path = tmp_path / "generation_tasks.jsonl"
+    results_path = tmp_path / "generations.jsonl"
+    failures_path = tmp_path / "generation_failures.jsonl"
+    prompts = ["translate: one", "translate: two"]
+    agent = generation_agent(text="out", author="m")
+
+    tasks = build_generation_tasks(prompts, tasks_path=tasks_path)
+    results, _ = await generate_all(tasks, [agent], results_path=results_path, failures_path=failures_path)
+    assert len(results) == 2
+    first_ids = {r.id for r in results}
+
+    # Rerun the exact same script — tasks reused (stable ids), generation skipped.
+    tasks_again = build_generation_tasks(prompts, tasks_path=tasks_path)
+    results_again, _ = await generate_all(tasks_again, [agent], results_path=results_path, failures_path=failures_path)
+    assert {r.id for r in results_again} == first_ids  # loaded, not regenerated
 
 
 def test_build_ranking_task(make_generation_result: GenerationResultFactory) -> None:

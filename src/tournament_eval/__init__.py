@@ -28,6 +28,8 @@ from .models import (
     RankingTaskDict,
 )
 from .orchestration import (
+    build_generation_task,
+    build_generation_tasks,
     build_ranking_task,
     build_ranking_tasks,
     generate_all,
@@ -71,6 +73,8 @@ __all__ = [
     "RankingTemplate",
     "alias_for_index",
     "append_record",
+    "build_generation_task",
+    "build_generation_tasks",
     "build_ranking_task",
     "build_ranking_tasks",
     "generate_all",

@@ -8,6 +8,10 @@ one failing agent never sinks a run:
    aliases (A, B, C...) so authorship is hidden from the rankers.
 3. :func:`rank_all` - every agent ranks every task's candidates.
 
+Build your generation tasks first with :func:`build_generation_tasks` (rerun-stable;
+see below) or construct :class:`~tournament_eval.models.GenerationTask` directly,
+then run the three stages.
+
 The pipeline is a thin wrapper over `pydantic-ai <https://ai.pydantic.dev>`_.
 You construct and own the :class:`pydantic_ai.Agent` instances - configuring their
 model, settings, thinking, retries, and concurrency the pydantic-ai way - and hand
@@ -160,6 +164,104 @@ def _usage_to_metadata(usage: RunUsage) -> dict[str, object]:
         "cache_read_tokens": usage.cache_read_tokens,
         "requests": usage.requests,
     }
+
+
+def build_generation_task(
+    prompt: str,
+    *,
+    id: uuid.UUID | None = None,
+    tasks_path: str | Path | None = None,
+) -> GenerationTask:
+    """Build one GenerationTask from a prompt.
+
+    Mirrors :func:`build_ranking_task` for the generation side: a fresh
+    :class:`uuid.UUID` (or the given ``id``) is stamped on the task and, if
+    ``tasks_path`` is set, the task is appended to that generation-tasks file as
+    soon as it is built.
+
+    **No resume** — unlike :func:`build_generation_tasks`, this always builds a
+    new task (with a fresh id when ``id`` is unset).  Resume is a batch concern;
+    use :func:`build_generation_tasks` when you want rerun stability.
+
+    Parameters
+    ----------
+    prompt : str
+        The generation prompt for this task.
+    id : uuid.UUID | None
+        Optional explicit id; defaults to a fresh ``uuid4``.  Pass an explicit
+        id only if you want to opt out of the library's id management — note that
+        a random id here makes :func:`generate_all` resume silently no-op for this
+        task across reruns (the id won't match), so prefer
+        :func:`build_generation_tasks` for rerun-stable ids.
+    tasks_path : str | Path | None
+        If set, the GenerationTask is appended to this generation-tasks file as
+        soon as it is built (mirrors ``build_ranking_task``).
+
+    Returns
+    -------
+    GenerationTask
+        A single GenerationTask with ``id`` and ``generation_prompt`` set.
+    """
+    task = GenerationTask(id=id or uuid.uuid4(), generation_prompt=prompt)
+    if tasks_path is not None:
+        persistence.append_record(tasks_path, task)
+    return task
+
+
+def build_generation_tasks(
+    prompts: Iterable[str],
+    tasks_path: str | Path,
+) -> list[GenerationTask]:
+    """Build GenerationTasks from prompts, rerun-stable by matching on prompt.
+
+    Mirrors :func:`build_ranking_tasks` for the generation side.  ``tasks_path`` is
+    **required** — persistence is the whole point: on a rerun the file is read back
+    and any prompt that already has a persisted task reuses it (and its id) as-is;
+    only prompts without one are built (with a fresh ``uuid4``) and appended.
+
+    This is what makes the naive "just rerun the script" pattern actually resume:
+    ids stay stable across runs because they come from the persisted file, so
+    :func:`generate_all`'s existing ``(task_id, author)`` resume matches and skips
+    already-done pairs instead of silently regenerating everything.
+
+    Tasks are matched to prompts **by their ``generation_prompt``**.  The
+    consequence: duplicate prompts collapse to a single task (and a single
+    GenerationResult per author) — two identical prompts are one task, not two,
+    and you don't want two identical candidates behind two aliases in a ranking.
+    For deliberate distinct duplicates, use :func:`build_generation_task` with an
+    explicit ``id`` (or construct :class:`GenerationTask` directly).
+
+    Parameters
+    ----------
+    prompts : Iterable[str]
+        The generation prompts.  Any iterable; materialised once, so an open text
+        file (yielding lines) is fine — strip the trailing newlines yourself if
+        they shouldn't be part of the prompt.
+    tasks_path : str | Path
+        The generation-tasks file: tasks are streamed here as built and read back
+        for per-prompt resume.  Required.
+
+    Returns
+    -------
+    list[GenerationTask]
+        One GenerationTask per input prompt (duplicates collapsed to the first
+        occurrence's task), ordered to match ``prompts``.
+    """
+    existing = {task.generation_prompt: task for task in persistence.read_generation_task_file(tasks_path)}
+
+    built: list[GenerationTask] = []
+    seen: set[str] = set()
+    for prompt in prompts:
+        if prompt in seen:
+            # Duplicate within this call: reuse the first occurrence's task rather
+            # than emitting a second one — keeps one task per unique prompt.
+            continue
+        seen.add(prompt)
+        if prompt in existing:
+            built.append(existing[prompt])  # frozen: reuse, never rebuild
+        else:
+            built.append(build_generation_task(prompt, tasks_path=tasks_path))
+    return built
 
 
 async def generate_one(
