@@ -8,23 +8,13 @@ version = "0.1.0"
 description = "Circular tournament evaluation framework for LLMs"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = [
-    "pydantic-ai-slim>=1.107.0",
-]
+dependencies = ["pydantic-ai-slim>=1.107.0"]
 
 [project.optional-dependencies]
-openai = [
-    "openai>=2.43.0",
-]
-google = [
-    "google-genai>=2.9.0",
-]
-anthropic = [
-    "anthropic>=0.111.0",
-]
-bedrock = [
-    "boto3>=1.43.33",
-]
+openai = ["openai>=2.43.0"]
+google = ["google-genai>=2.9.0"]
+anthropic = ["anthropic>=0.111.0"]
+bedrock = ["boto3>=1.43.33"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tournament_eval"]
@@ -64,6 +54,10 @@ ignore = ["SIM108"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "integration: end-to-end tests against a real local Ollama server (opt-in; deselected by default)",
+]
+addopts = ["-m", "not integration"]
 
 [tool.mypy]
 python_version = "3.14"
