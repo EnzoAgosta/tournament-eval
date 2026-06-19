@@ -273,20 +273,33 @@ Reading a run back is per-file and typed — `read_generation_result_file`, `rea
 
 **One caveat — ranking tasks freeze.** A `RankingTask` carries a random alias shuffle, so `build_ranking_tasks(..., tasks_path="run/ranking_tasks.jsonl")` builds each task once and, on a rerun, reuses the persisted one rather than rebuilding (a rebuild would re-shuffle and orphan every ranking already collected). The consequence: a generation that only succeeds on a *later* resume won't be added to an already-built ranking task. So **let generation finish before you start ranking** — run `generate_all` until its `failures` are empty, then build ranking tasks. To deliberately rebuild, delete the ranking-tasks file (and any rankings) first.
 
-## Scope
+## Aggregation
 
-**Aggregation is intentionally out of scope.** The framework hands you the rankings and the reasoning; collapsing them into a verdict — Borda, Condorcet, Bradley–Terry, Elo over the pairwise implications, whatever fits — is a real methodological decision, not a detail to bury in a library. It's all ordinal-ranking math over data you already have on disk, so it's yours for now (and may arrive later as an opt-in convenience).
+Collapsing per-ranker rankings into a verdict is a real methodological choice, so the `aggregation` package treats it as a **convenience, not a mandate**: every method is a pure function over plain *ballots* (one ranker's verdict as author labels, best-first), so you can use one, several, or none — and still do your own math over the data on disk. One invariant holds throughout: **ballots are strict total orders, never ties** (the shape `DefaultRankingTemplate` guarantees).
 
-Resolving the data is fair game, though — and there's a ready-made helper for the de-anonymization step. `deanonymize_ranking(ranking_result, generations)` maps a ranking's `GenerationResult` ids back to author names, best-first — the line right before aggregation begins:
+`ballots_from_rankings` bridges a run to the methods, de-anonymizing each ranking's ids back to author labels:
 
 ```python
-from tournament_eval import deanonymize_ranking
+from tournament_eval import ballots_from_rankings, borda, normalized_borda
 
-authors_best_first = deanonymize_ranking(ranking_result, generations)
-# e.g. ["gpt-4o", "claude-sonnet-4-6", "llama-3.3-70b"]
+ballots = ballots_from_rankings(rankings, generations)
+borda(ballots)             # raw Borda points; assumes full participation
+normalized_borda(ballots)  # mean per-ballot score in [0, 1]; fair under unequal participation
 ```
 
-It's a pure function over data you already have on disk (the `generations` from `generate_all` or `read_generation_result_file`), so it composes cleanly with whatever aggregation you choose.
+`borda` and `normalized_borda` are pure counting and always available. The pairwise methods need `numpy` (the `analysis` extra) and live in their own submodules, so a base `import tournament_eval` stays dependency-free:
+
+```python
+# pip install "tournament-eval[analysis]"
+from tournament_eval.aggregation.pairwise import pairwise_matrix   # head-to-head count matrix
+from tournament_eval.aggregation.copeland import copeland           # wins − losses; a Condorcet winner tops it
+
+copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})
+```
+
+`pairwise_matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). More methods (Schulze, Bradley–Terry, …) will land here over time — conservatively, only ones whose results we're confident are accurate.
+
+Prefer to roll your own? `deanonymize_ranking(ranking_result, generations)` returns one ranking's authors best-first — a pure function over the `generations` you already have (from `generate_all` or `read_generation_result_file`), composing with whatever aggregation you choose.
 
 ## Tested and typed
 
