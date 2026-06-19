@@ -16,7 +16,7 @@ shouldn't care about any wire protocol) and the data factories.
 import io
 import uuid
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Protocol, cast
 
 import boto3
 import httpx
@@ -26,6 +26,7 @@ from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from tournament_eval.llm.base import GenerationResponse, LLMClient, StructuredResponse
+from tournament_eval.llm.bedrock import BedrockRuntimeClient
 from tournament_eval.models import (
     GenerationFailure,
     GenerationResult,
@@ -79,7 +80,7 @@ class MockLLMClient(LLMClient):
             raise RuntimeError("Enter boom")
         return self
 
-    async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
+    async def __aexit__(self, *args: object) -> None:
         if self.raise_on_exit:
             raise RuntimeError("Exit boom")
 
@@ -93,7 +94,7 @@ def test_transport() -> Callable[..., FakeTransport]:
 
 
 @pytest.fixture
-def bedrock_stub() -> Callable[[Any], tuple[Any, Stubber]]:
+def bedrock_stub() -> Callable[[object], tuple[BedrockRuntimeClient, Stubber]]:
     """A real ``bedrock-runtime`` client with ``invoke_model`` stubbed.
 
     Pass the JSON the model should "return"; get back the client and an un-entered
@@ -102,7 +103,7 @@ def bedrock_stub() -> Callable[[Any], tuple[Any, Stubber]]:
     back, so the transport's ``body.read()`` path is exercised for real.
     """
 
-    def _make(response_body: Any) -> tuple[Any, Stubber]:
+    def _make(response_body: object) -> tuple[BedrockRuntimeClient, Stubber]:
         client = boto3.client(
             "bedrock-runtime",
             region_name="us-east-1",
@@ -115,7 +116,7 @@ def bedrock_stub() -> Callable[[Any], tuple[Any, Stubber]]:
             "invoke_model",
             {"body": StreamingBody(io.BytesIO(payload), len(payload)), "contentType": "application/json"},
         )
-        return client, stubber
+        return cast(BedrockRuntimeClient, client), stubber
 
     return _make
 

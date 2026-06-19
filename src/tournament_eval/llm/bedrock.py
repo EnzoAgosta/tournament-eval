@@ -22,13 +22,17 @@ schema into the prompt and parsing the reply — **best-effort, documented flaky
 Because generation and ranking are separate axes, run such a model as a *contestant*
 (generation only) and let a model with reliable structured output do the *ranking*.
 
-The injected client is typed structurally, so this module never imports boto3 —
-the ``bedrock`` extra exists to put boto3 on your path to *build* that client.
+The injected client is typed structurally (against :class:`BedrockRuntimeClient`),
+so this module never imports boto3 at runtime — the ``bedrock`` extra exists to put
+boto3 on your path to *build* that client.  ``StreamingBody`` is imported only under
+``TYPE_CHECKING`` (it ships with botocore, which boto3 pulls in) so the
+``invoke_model`` return type is precise without adding a runtime import.
 """
 
 import abc
 import asyncio
-from typing import Any, Protocol, Unpack
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Protocol, TypedDict, Unpack
 
 import orjson
 
@@ -41,11 +45,29 @@ from tournament_eval.llm.base import (
     resolve_semaphore,
 )
 
+if TYPE_CHECKING:
+    from botocore.response import StreamingBody
+
+
+class InvokeModelResponse(TypedDict):
+    """The slice of boto's ``invoke_model`` response this adapter reads.
+
+    Only ``body`` is accessed (``.read()`` → bytes → :func:`orjson.loads`); the
+    other fields boto returns are present at runtime but ignored, so the TypedDict
+    keeps just the one required key.
+    """
+
+    body: StreamingBody
+
 
 class BedrockRuntimeClient(Protocol):
-    """The slice of a boto3 ``bedrock-runtime`` client this adapter uses."""
+    """The slice of a boto3 ``bedrock-runtime`` client this adapter uses.
 
-    def invoke_model(self, **kwargs: Any) -> dict[str, Any]: ...
+    Structural (a :class:`typing.Protocol`), so the real boto3 client satisfies it
+    without inheritance — and so this module doesn't import boto3 at runtime.
+    """
+
+    def invoke_model(self, **kwargs: object) -> InvokeModelResponse: ...
 
 
 class BedrockClient(abc.ABC):
@@ -95,7 +117,7 @@ class BedrockClient(abc.ABC):
         return value
 
     @staticmethod
-    def _list_field(obj: object, key: str) -> list[Any]:
+    def _list_field(obj: object, key: str) -> list[object]:
         """Return ``obj[key]`` as a non-empty list, or raise if the shape is wrong."""
         if not isinstance(obj, dict):
             raise ValueError(f"Bedrock response: expected an object for {key!r}")
@@ -115,11 +137,11 @@ class BedrockClient(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         """Pull the assistant text out of the family-specific response body."""
         ...
 
-    def _extract_reasoning(self, _response: dict[str, Any]) -> str | None:
+    def _extract_reasoning(self, _response: Mapping[str, object]) -> str | None:
         """Pull the model's reasoning trace from the response, if it has one.
 
         Defaults to ``None`` — over the Invoke API most families surface no
@@ -128,8 +150,8 @@ class BedrockClient(abc.ABC):
         """
         return None
 
-    async def _invoke(self, body: dict[str, object]) -> dict[str, Any]:
-        def _call() -> Any:
+    async def _invoke(self, body: dict[str, object]) -> dict[str, object]:
+        def _call() -> object:
             response = self._client.invoke_model(
                 modelId=self._model_id,
                 body=orjson.dumps(body),
@@ -209,7 +231,7 @@ class AnthropicBedrockClient(BedrockClient):
             body["output_config"] = output_config
         return body
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         if response.get("stop_reason") == "refusal":
             raise ValueError("Model refused to respond")
         for block in self._list_field(response, "content"):
@@ -217,7 +239,7 @@ class AnthropicBedrockClient(BedrockClient):
                 return self._str_field(block, "text")
         raise ValueError("Bedrock/Claude response had no text block")
 
-    def _extract_reasoning(self, response: dict[str, Any]) -> str | None:
+    def _extract_reasoning(self, response: Mapping[str, object]) -> str | None:
         for block in self._list_field(response, "content"):
             if isinstance(block, dict) and block.get("type") == "thinking":
                 return self._str_field(block, "thinking")
@@ -240,11 +262,14 @@ class NovaBedrockClient(BedrockClient):
             body["system"] = [{"text": self._system_prompt}]
         return body
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         output = response.get("output")
         if not isinstance(output, dict):
             raise ValueError("Nova response missing 'output'")
-        for block in self._list_field(output.get("message"), "content"):
+        message = output.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Nova response missing 'output.message'")
+        for block in self._list_field(message, "content"):
             if isinstance(block, dict) and "text" in block:
                 return self._str_field(block, "text")
         raise ValueError("Nova response had no text block")
@@ -262,7 +287,7 @@ class TitanBedrockClient(BedrockClient):
             config["maxTokenCount"] = self._max_tokens
         return {"inputText": text, "textGenerationConfig": config}
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         return self._str_field(self._list_field(response, "results")[0], "outputText")
 
 
@@ -290,7 +315,7 @@ class LlamaBedrockClient(BedrockClient):
         parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
         return "".join(parts)
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         return self._str_field(response, "generation")
 
 
@@ -313,7 +338,7 @@ class MistralBedrockClient(BedrockClient):
             body["max_tokens"] = self._max_tokens
         return body
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         return self._str_field(self._list_field(response, "outputs")[0], "text")
 
 
@@ -336,7 +361,7 @@ class CohereBedrockClient(BedrockClient):
             body["max_tokens"] = self._max_tokens
         return body
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         return self._str_field(response, "text")
 
 
@@ -365,13 +390,13 @@ class _OpenAIChatBedrockClient(BedrockClient):
             body[self._MAX_TOKENS_KEY] = self._max_tokens
         return body
 
-    def _content(self, response: dict[str, Any]) -> str:
+    def _content(self, response: Mapping[str, object]) -> str:
         """The raw ``choices[0].message.content`` string, before any cleaning."""
         choice = self._list_field(response, "choices")[0]
         message = choice.get("message") if isinstance(choice, dict) else None
         return self._str_field(message, "content")
 
-    def _extract_text(self, response: dict[str, Any]) -> str:
+    def _extract_text(self, response: Mapping[str, object]) -> str:
         return self._clean(self._content(response))
 
     def _clean(self, text: str) -> str:
@@ -402,7 +427,7 @@ class GptOssBedrockClient(_OpenAIChatBedrockClient):
         _, separator, answer = text.partition("</reasoning>")
         return answer.lstrip() if separator else text
 
-    def _extract_reasoning(self, response: dict[str, Any]) -> str | None:
+    def _extract_reasoning(self, response: Mapping[str, object]) -> str | None:
         head, separator, _ = self._content(response).partition("</reasoning>")
         if not separator:
             return None

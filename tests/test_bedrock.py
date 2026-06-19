@@ -9,9 +9,11 @@ Two layers, matching the two things each family owns:
   stubbed with :class:`botocore.stub.Stubber` (the ``bedrock_stub`` fixture).
 """
 
-from typing import Any, cast
+from collections.abc import Callable
+from typing import cast
 
 import pytest
+from botocore.stub import Stubber
 
 from tournament_eval.llm.bedrock import (
     AnthropicBedrockClient,
@@ -26,7 +28,8 @@ from tournament_eval.llm.bedrock import (
     TitanBedrockClient,
 )
 
-# The formatters never touch the client, so a dummy stands in for one, casted to shut up mypy
+# The formatters never touch the client, so a dummy stands in for one, cast to the
+# structural BedrockRuntimeClient Protocol to satisfy the type checker.
 _NO_CLIENT = cast(BedrockRuntimeClient, object())
 
 
@@ -137,6 +140,12 @@ def test_nova_extract_no_text_block() -> None:
     client = NovaBedrockClient(_NO_CLIENT, model_id="m")
     with pytest.raises(ValueError, match="no text block"):
         client._extract_text({"output": {"message": {"content": [{"foo": 1}]}}})
+
+
+def test_nova_extract_missing_message() -> None:
+    client = NovaBedrockClient(_NO_CLIENT, model_id="m")
+    with pytest.raises(ValueError, match=r"missing 'output\.message'"):
+        client._extract_text({"output": {}})
 
 
 def test_titan_build_body() -> None:
@@ -276,7 +285,9 @@ def test_extract_field_value_not_a_string() -> None:
         client._extract_text({"choices": [{"message": {"content": 5}}]})
 
 
-async def test_transport_generate_round_trip(bedrock_stub: Any) -> None:
+async def test_transport_generate_round_trip(
+    bedrock_stub: Callable[[object], tuple[BedrockRuntimeClient, Stubber]],
+) -> None:
     client, stubber = bedrock_stub({"content": [{"type": "text", "text": "bonjour"}]})
     with stubber:
         out = await AnthropicBedrockClient(client, model_id="anthropic.claude").generate("hi")
@@ -284,7 +295,9 @@ async def test_transport_generate_round_trip(bedrock_stub: Any) -> None:
     stubber.assert_no_pending_responses()
 
 
-async def test_transport_generate_structured_round_trip(bedrock_stub: Any) -> None:
+async def test_transport_generate_structured_round_trip(
+    bedrock_stub: Callable[[object], tuple[BedrockRuntimeClient, Stubber]],
+) -> None:
     client, stubber = bedrock_stub({"content": [{"type": "text", "text": '{"x": 1}'}]})
     with stubber:
         response = await AnthropicBedrockClient(client, model_id="m").generate_structured("hi", {"type": "object"})
@@ -292,7 +305,9 @@ async def test_transport_generate_structured_round_trip(bedrock_stub: Any) -> No
     stubber.assert_no_pending_responses()
 
 
-async def test_transport_best_effort_family_round_trip(bedrock_stub: Any) -> None:
+async def test_transport_best_effort_family_round_trip(
+    bedrock_stub: Callable[[object], tuple[BedrockRuntimeClient, Stubber]],
+) -> None:
     client, stubber = bedrock_stub({"choices": [{"message": {"content": "bonjour"}}]})
     with stubber:
         out = await JambaBedrockClient(client, model_id="ai21.jamba").generate("hi")
@@ -300,7 +315,9 @@ async def test_transport_best_effort_family_round_trip(bedrock_stub: Any) -> Non
     stubber.assert_no_pending_responses()
 
 
-async def test_transport_captures_thinking_trace(bedrock_stub: Any) -> None:
+async def test_transport_captures_thinking_trace(
+    bedrock_stub: Callable[[object], tuple[BedrockRuntimeClient, Stubber]],
+) -> None:
     client, stubber = bedrock_stub(
         {"content": [{"type": "thinking", "thinking": "hmm"}, {"type": "text", "text": "bonjour"}]}
     )
@@ -310,7 +327,9 @@ async def test_transport_captures_thinking_trace(bedrock_stub: Any) -> None:
     stubber.assert_no_pending_responses()
 
 
-async def test_transport_non_object_response_body_raises(bedrock_stub: Any) -> None:
+async def test_transport_non_object_response_body_raises(
+    bedrock_stub: Callable[[object], tuple[BedrockRuntimeClient, Stubber]],
+) -> None:
     client, stubber = bedrock_stub([1, 2, 3])
     with stubber, pytest.raises(ValueError, match="not a JSON object"):
         await AnthropicBedrockClient(client, model_id="m").generate("hi")
