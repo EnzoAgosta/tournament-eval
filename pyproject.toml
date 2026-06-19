@@ -15,6 +15,10 @@ openai = ["openai>=2.43.0"]
 google = ["google-genai>=2.9.0"]
 anthropic = ["anthropic>=0.111.0"]
 bedrock = ["boto3>=1.43.33"]
+analysis = [
+    "numpy>=2.4.6",
+    "scipy>=1.17.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tournament_eval"]

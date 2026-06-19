@@ -20,6 +20,17 @@ A strict total order — each label appears at most once, no ties (the invariant
 whole :mod:`tournament_eval.aggregation` package holds to)."""
 
 
+def reject_ties(ballot: Ballot) -> None:
+    """Raise if a ballot lists any contestant more than once.
+
+    The package-wide guard for the no-ties invariant: a repeated label is a malformed
+    ballot (not a representable tie) that would silently double-count.  Shared by every
+    aggregation method so the rule is enforced identically everywhere.
+    """
+    if len(set(ballot)) != len(ballot):
+        raise ValueError(f"Ballot lists a contestant more than once (no ties allowed): {ballot!r}")
+
+
 def ballots_from_rankings(
     ranking_results: Iterable[RankingResult],
     generation_results: Iterable[GenerationResult],

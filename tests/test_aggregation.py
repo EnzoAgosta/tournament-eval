@@ -1,9 +1,24 @@
 """Tests for the aggregation package: the pure Borda math and the ballot adapter."""
 
+import subprocess
+import sys
+
 import pytest
 
 from tests.conftest import GenerationResultFactory, RankingResultFactory
 from tournament_eval.aggregation import ballots_from_rankings, borda, normalized_borda
+
+
+def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
+    # The analysis extra must stay optional: importing the package (and the aggregation
+    # root) must not load numpy, even though the numpy-backed methods exist in submodules.
+    # Run in a fresh interpreter because other tests in this process import numpy directly.
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys, tournament_eval; assert 'numpy' not in sys.modules"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_borda_scores_a_single_ballot_top_to_bottom() -> None:
@@ -65,12 +80,18 @@ def test_normalized_borda_does_not_reward_more_frequent_participation() -> None:
     assert scores["y"] == 1.0
 
 
-def test_normalized_borda_skips_ballots_with_no_comparison() -> None:
-    # A lone-candidate ballot carries no comparative information: "solo" is dropped,
-    # and the size-2 ballot is scored normally.
-    scores = normalized_borda([["solo"], ["a", "b"]])
+def test_normalized_borda_warns_and_skips_ballots_with_no_comparison() -> None:
+    # A lone-candidate ballot carries no comparative information: "solo" is dropped (with
+    # a warning so it isn't silent), and the size-2 ballot is scored normally.
+    with pytest.warns(UserWarning, match="fewer than two candidates"):
+        scores = normalized_borda([["solo"], ["a", "b"]])
 
     assert scores == {"a": 1.0, "b": 0.0}
+
+
+def test_normalized_borda_fail_fast_raises_on_a_no_comparison_ballot() -> None:
+    with pytest.raises(ValueError, match="fewer than two candidates"):
+        normalized_borda([["solo"], ["a", "b"]], fail_fast=True)
 
 
 def test_normalized_borda_of_no_ballots_is_empty() -> None:

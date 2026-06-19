@@ -16,15 +16,10 @@ assume every ballot is a strict total order.  A contestant appearing twice in on
 is malformed (not a tie) and raises :class:`ValueError`.
 """
 
+import warnings
 from collections.abc import Iterable
 
-from tournament_eval.aggregation.ballots import Ballot
-
-
-def _reject_ties(ballot: Ballot) -> None:
-    """Raise if a ballot lists any contestant more than once (a malformed, non-tie ballot)."""
-    if len(set(ballot)) != len(ballot):
-        raise ValueError(f"Ballot lists a contestant more than once (no ties allowed): {ballot!r}")
+from tournament_eval.aggregation.ballots import Ballot, reject_ties
 
 
 def borda(ballots: Iterable[Ballot]) -> dict[str, float]:
@@ -59,14 +54,14 @@ def borda(ballots: Iterable[Ballot]) -> dict[str, float]:
     """
     scores: dict[str, float] = {}
     for ballot in ballots:
-        _reject_ties(ballot)
+        reject_ties(ballot)
         last_index = len(ballot) - 1
         for position, label in enumerate(ballot):
             scores[label] = scores.get(label, 0.0) + (last_index - position)
     return scores
 
 
-def normalized_borda(ballots: Iterable[Ballot]) -> dict[str, float]:
+def normalized_borda(ballots: Iterable[Ballot], *, fail_fast: bool = False) -> dict[str, float]:
     """Borda count fair under unequal participation: each contestant's mean ballot score.
 
     Within a ballot of *k* contestants, raw Borda points (``k - 1 .. 0``) are rescaled to
@@ -76,23 +71,38 @@ def normalized_borda(ballots: Iterable[Ballot]) -> dict[str, float]:
     Because it averages rather than sums, appearing in more ballots can't inflate a
     score; a contestant is judged on how it placed, not how often it competed.
 
+    A ballot with fewer than two candidates carries no comparative information (there is
+    nothing to rescale — its single contestant is simultaneously best and worst).  Such a
+    ballot can't be scored honestly: by default it is skipped and a :class:`UserWarning`
+    is emitted so the skip is never silent; pass ``fail_fast=True`` to instead raise a
+    :class:`ValueError` on the first one.
+
     Parameters
     ----------
     ballots : Iterable[Ballot]
         The ranked verdicts, each contestant labels best-first.
+    fail_fast : bool
+        If ``True``, raise :class:`ValueError` on the first ballot with fewer than two
+        candidates instead of warning and skipping it.  Default ``False``.
 
     Returns
     -------
     dict[str, float]
         Mean rescaled Borda score in ``[0, 1]`` per contestant, higher is better.
-        Contestants that appear *only* in ballots carrying no comparative information
-        (fewer than two candidates) are omitted, since such ballots are skipped — there
-        is nothing to compare, and inventing a score would be dishonest.
+        Contestants that appear *only* in skipped (sub-two-candidate) ballots are absent
+        from the result.
 
     Raises
     ------
     ValueError
-        If any single ballot lists a contestant more than once (as in :func:`borda`).
+        If any single ballot lists a contestant more than once (as in :func:`borda`), or
+        — when ``fail_fast`` is set — if any ballot has fewer than two candidates.
+
+    Warns
+    -----
+    UserWarning
+        When ``fail_fast`` is ``False`` and one or more ballots were skipped for having
+        fewer than two candidates.
 
     Notes
     -----
@@ -103,14 +113,25 @@ def normalized_borda(ballots: Iterable[Ballot]) -> dict[str, float]:
     """
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
+    skipped = 0
     for ballot in ballots:
-        _reject_ties(ballot)
+        reject_ties(ballot)
         last_index = len(ballot) - 1
         if last_index < 1:
-            # A 0- or 1-candidate ballot carries no comparative information; skip it
-            # rather than divide by zero or fabricate a score.
+            if fail_fast:
+                raise ValueError(
+                    f"Ballot has fewer than two candidates, so it carries no comparative "
+                    f"information for normalized_borda: {ballot!r}"
+                )
+            skipped += 1
             continue
         for position, label in enumerate(ballot):
             totals[label] = totals.get(label, 0.0) + (last_index - position) / last_index
             counts[label] = counts.get(label, 0) + 1
+    if skipped:
+        warnings.warn(
+            f"normalized_borda skipped {skipped} ballot(s) with fewer than two candidates "
+            "(no comparative information); pass fail_fast=True to raise instead.",
+            stacklevel=2,
+        )
     return {label: totals[label] / counts[label] for label in totals}

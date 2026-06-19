@@ -12,6 +12,18 @@ ranking template guarantees (see :class:`~tournament_eval.ranking.DefaultRanking
 Every method here assumes this and will keep assuming it until further notice; none of
 them model tie-groups.  A ballot that ranks the same contestant twice is malformed (not
 a tie) and is rejected.
+
+**Optional heavy dependencies.**  The positional methods (:func:`borda`,
+:func:`normalized_borda`) are pure counting, always available, and re-exported here.  The
+pairwise methods need ``numpy`` from the ``analysis`` extra and live in their own
+submodules — import them directly::
+
+    from tournament_eval.aggregation.pairwise import pairwise_matrix
+    from tournament_eval.aggregation.copeland import copeland
+
+This package root deliberately re-exports only the dependency-free methods, so importing
+it (and ``tournament_eval``) never pulls in numpy; the submodule import path is where you
+opt into the extra.
 """
 
 from .ballots import Ballot, ballots_from_rankings
