@@ -556,20 +556,24 @@ async def rank_one(
         result = RankingResult(
             id=uuid.uuid4(),
             ranking_task_id=ranking_task.id,
+            generation_task_id=ranking_task.generation_task_id,
             ranking_prompt=prompt,
             author=_resolve_author(agent),
             raw_model_ranking=parsed.ranking,
             ranking=uuid_ranking,
-            reasoning=parsed.reasoning,
+            ranking_reasoning=parsed.reasoning,
+            reasoning=_extract_reasoning(run.new_messages()),
             raw_response=run.output.model_dump_json(),
             metadata=_usage_to_metadata(run.usage),
         )
     except Exception as exc:
         result = RankingFailure(
             ranking_task_id=ranking_task.id,
+            generation_task_id=ranking_task.generation_task_id,
             author=_resolve_author(agent),
             error_type=type(exc).__name__,
             message=str(exc),
+            ranking_prompt=prompt,
         )
 
     if isinstance(result, RankingResult):
@@ -668,3 +672,38 @@ async def rank_all(
         else:
             ranking_failures.append(outcome)
     return ranking_results, ranking_failures
+
+
+def deanonimize_ranking(
+    ranking_result: RankingResult,
+    generations: Iterable[GenerationResult],
+) -> list[str]:
+    """Resolve a :class:`RankingResult`'s alias-space ranking into author names.
+
+    Maps ``ranking_result.ranking`` (a list of :class:`GenerationResult` ids, best
+    first) to the ``author`` of each, using ``generations`` as the lookup.  This is
+    the de-anonymization step for analysis - the line right before aggregation
+    begins - and the inverse of the aliasing :func:`build_ranking_task` did at
+    ranking-task build time.
+
+    A pure function: no state, no I/O, no mutation.  Raises :class:`KeyError` if a
+    ranked id isn't among ``generations`` (a ranking should only reference ids from
+    its own task's candidate set, so that's a data-integrity error worth surfacing
+    loudly rather than silently dropping).
+
+    Parameters
+    ----------
+    ranking_result : RankingResult
+        The ranking to de-anonymize.
+    generations : Iterable[GenerationResult]
+        The generation outputs (e.g. what :func:`generate_all` returned, or what
+        ``read_generation_result_file`` loaded back).  Used to map each ranked id
+        to its ``author``.
+
+    Returns
+    -------
+    list[str]
+        Authors in ranked order, best first - e.g. ``["gpt-4o", "claude-sonnet-4-6", ...]``.
+    """
+    author_by_id = {generation.id: generation.author for generation in generations}
+    return [author_by_id[generation_id] for generation_id in ranking_result.ranking]

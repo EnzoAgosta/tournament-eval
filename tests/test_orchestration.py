@@ -10,13 +10,14 @@ import uuid
 from pathlib import Path
 
 import pytest
-from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, TextPart, ThinkingPart
+from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, TextPart, ThinkingPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from tests.conftest import (
     GenerationResultFactory,
     GenerationTaskFactory,
+    RankingResultFactory,
     RankingTaskFactory,
     generation_agent,
     raising_generation_agent,
@@ -30,6 +31,7 @@ from tournament_eval.orchestration import (
     build_generation_tasks,
     build_ranking_task,
     build_ranking_tasks,
+    deanonimize_ranking,
     generate_all,
     generate_one,
     rank_all,
@@ -451,10 +453,12 @@ async def test_rank_one_returns_ranking_result(
     assert isinstance(result, RankingResult)
     assert isinstance(result.id, uuid.UUID)
     assert result.ranking_task_id == ranking_task.id
+    assert result.generation_task_id == ranking_task.generation_task_id
     assert result.author == "ranker"
     assert result.raw_model_ranking == ["B", "A"]
     assert result.ranking == [gen_b.id, gen_a.id]
-    assert result.reasoning == "b is better"
+    assert result.ranking_reasoning == "b is better"
+    assert result.reasoning is None  # TestModel produces no thinking parts
     assert json.loads(result.raw_response) == {"ranking": ["B", "A"], "reasoning": "b is better"}
     assert ranking_task.ranking_prompt in result.ranking_prompt
     assert "output_tokens" in result.metadata
@@ -471,9 +475,11 @@ async def test_rank_one_returns_ranking_failure_on_error(
 
     assert isinstance(result, RankingFailure)
     assert result.ranking_task_id == ranking_task.id
+    assert result.generation_task_id == ranking_task.generation_task_id
     assert result.author == "boom-ranker"
     assert result.error_type == "RuntimeError"
     assert result.message == "boom"
+    assert result.ranking_prompt  # the rendered prompt that triggered the failure
 
 
 async def test_rank_one_returns_ranking_failure_on_unknown_alias(
@@ -489,9 +495,11 @@ async def test_rank_one_returns_ranking_failure_on_unknown_alias(
 
     assert isinstance(result, RankingFailure)
     assert result.ranking_task_id == ranking_task.id
+    assert result.generation_task_id == ranking_task.generation_task_id
     assert result.author == "ranker"
     assert result.error_type == "ValueError"
     assert "Z" in result.message
+    assert result.ranking_prompt  # the rendered prompt that triggered the failure
 
 
 async def test_rank_one_saves_to_results_path(
@@ -537,8 +545,8 @@ async def test_rank_all_returns_list_of_ranking_results(
     assert len(failures) == 0
     assert len(results) == 2
     by_author = {r.author: r for r in results}
-    assert by_author["client1"].reasoning == "one"
-    assert by_author["client2"].reasoning == "two"
+    assert by_author["client1"].ranking_reasoning == "one"
+    assert by_author["client2"].ranking_reasoning == "two"
     assert all(r.ranking == [gen.id] for r in results)
 
 
@@ -631,8 +639,8 @@ async def test_rank_all_reads_ranking_results_from_results_path(
     assert len(failures) == 0
     assert len(results) == 2
     by_author = {result.author: result for result in results}
-    assert by_author["client1"].reasoning == "one"  # loaded, not re-ranked
-    assert by_author["client2"].reasoning == "two"
+    assert by_author["client1"].ranking_reasoning == "one"  # loaded, not re-ranked
+    assert by_author["client2"].ranking_reasoning == "two"
 
 
 async def test_rank_all_ignores_records_outside_current_universe(
@@ -652,7 +660,7 @@ async def test_rank_all_ignores_records_outside_current_universe(
     assert len(failures) == 0
     assert len(results) == 1
     assert results[0].ranking_task_id == ranking_task.id
-    assert results[0].reasoning == "new"  # ranked this run, not the stale loaded record
+    assert results[0].ranking_reasoning == "new"  # ranked this run, not the stale loaded record
 
 
 async def test_rank_all_rejects_duplicate_authors(
@@ -697,3 +705,66 @@ async def test_generate_one_captures_reasoning_trace(make_generation_task: Gener
     assert isinstance(result, GenerationResult)
     assert result.output == "answer"
     assert result.reasoning == "let me think"
+
+
+async def test_rank_one_captures_reasoning_trace(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    # The ranker's thinking trace is captured separately from its ranking justification.
+    from tournament_eval.ranking import RankingResponse
+
+    def fn(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(
+            parts=[
+                ThinkingPart(content="weighing fluency vs accuracy"),
+                ToolCallPart("final_result", {"ranking": ["A"], "reasoning": "A is clearer"}),
+            ],
+            usage=RequestUsage(input_tokens=1, output_tokens=1),
+        )
+
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    agent = Agent(FunctionModel(fn, model_name="ranker"), output_type=RankingResponse)
+    result = await rank_one(ranking_task, agent, {gen.id: gen})
+    assert isinstance(result, RankingResult)
+    assert result.ranking_reasoning == "A is clearer"  # the structured-output justification
+    assert result.reasoning == "weighing fluency vs accuracy"  # the thinking trace
+
+
+def test_deanonimize_ranking_maps_ids_to_authors(
+    make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
+) -> None:
+    gen_a = make_generation_result(author="alpha")
+    gen_b = make_generation_result(author="beta")
+    gen_c = make_generation_result(author="gamma")
+    # ranking is best-first in id space: [gen_b, gen_a, gen_c]
+    result = make_ranking_result(ranking=[gen_b.id, gen_a.id, gen_c.id])
+
+    deanon = deanonimize_ranking(result, [gen_a, gen_b, gen_c])
+
+    assert deanon == ["beta", "alpha", "gamma"]
+
+
+def test_deanonimize_ranking_accepts_any_iterable(
+    make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
+) -> None:
+    gen_a = make_generation_result(author="alpha")
+    gen_b = make_generation_result(author="beta")
+    result = make_ranking_result(ranking=[gen_a.id, gen_b.id])
+
+    # A generator, not a list — the helper materialises it into the lookup.
+    deanon = deanonimize_ranking(result, (g for g in [gen_a, gen_b]))
+
+    assert deanon == ["alpha", "beta"]
+
+
+def test_deanonimize_ranking_raises_on_unknown_id(
+    make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
+) -> None:
+    gen_a = make_generation_result(author="alpha")
+    other = make_generation_result(author="orphan")  # not in the ranking's candidate set
+    result = make_ranking_result(ranking=[gen_a.id, other.id])
+
+    # A ranking referencing an id absent from `generations` is a data-integrity error.
+    with pytest.raises(KeyError):
+        deanonimize_ranking(result, [gen_a])

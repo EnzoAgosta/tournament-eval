@@ -155,9 +155,11 @@ class RankingTask:
 
 class RankingFailureDict(TypedDict):
     ranking_task_id: str
+    generation_task_id: str
     author: str
     error_type: str
     message: str
+    ranking_prompt: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -166,31 +168,44 @@ class RankingFailure:
 
     ranking_task_id: uuid.UUID
     """The :class:`RankingTask` this failure is for."""
+    generation_task_id: uuid.UUID
+    """The :class:`GenerationTask` whose outputs were being ranked.  Records
+    provenance so a failure traces back to its source task without a join through
+    the :class:`RankingTask`."""
     author: str
     """The model identifier that failed to rank this result."""
     error_type: str
     """The type of error that occurred."""
     message: str
     """The error message."""
+    ranking_prompt: str
+    """The exact ranking prompt sent to the model, verbatim.  Carries the rendered
+    template output (candidates, rubric, ...), so a failure is debuggable without
+    rebuilding the :class:`RankingTask` and its candidates — useful for auditing
+    template/anonymization issues."""
 
     @classmethod
     def from_json(cls, data: RankingFailureDict) -> RankingFailure:
         """Rebuild from a JSON-decoded dict (e.g. a line read from a run file)."""
         return cls(
             ranking_task_id=uuid.UUID(data["ranking_task_id"]),
+            generation_task_id=uuid.UUID(data["generation_task_id"]),
             author=data["author"],
             error_type=data["error_type"],
             message=data["message"],
+            ranking_prompt=data["ranking_prompt"],
         )
 
 
 class RankingResultDict(TypedDict):
     id: str
     ranking_task_id: str
+    generation_task_id: str
     ranking_prompt: str
     author: str
     raw_model_ranking: list[str]
     ranking: list[str]
+    ranking_reasoning: str | None
     reasoning: str | None
     raw_response: str
     metadata: dict[str, object]
@@ -204,6 +219,10 @@ class RankingResult:
     """Unique identifier for this ranking."""
     ranking_task_id: uuid.UUID
     """The :class:`RankingTask` that was used to produce this ranking."""
+    generation_task_id: uuid.UUID
+    """The :class:`GenerationTask` whose outputs were ranked.  Records provenance
+    so a ranking traces straight back to its source task without a join through
+    the :class:`RankingTask`."""
     ranking_prompt: str
     """The exact ranking prompt sent to the model, verbatim."""
     author: str
@@ -215,8 +234,14 @@ class RankingResult:
     """Cleaned-up ranking in ranked order from best to worst.
     Parsed from ``raw_model_ranking`` by matching against the generation IDs
     in the :class:`RankingTask`."""
+    ranking_reasoning: str | None
+    """The ranking justification the model wrote in its structured response's
+    ``reasoning`` field, if any.  This is *output*, not the model's thinking
+    trace — see :attr:`reasoning` for that."""
     reasoning: str | None
-    """The reasoning provided by the model, if any."""
+    """The model's reasoning/thinking trace from the ranking run, if the provider
+    surfaced one (mirrors :attr:`GenerationResult.reasoning`).  ``None`` when the
+    model produced no thinking parts."""
     raw_response: str
     """The complete structured JSON response returned by the LLM."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
@@ -231,10 +256,12 @@ class RankingResult:
         return cls(
             id=uuid.UUID(data["id"]),
             ranking_task_id=uuid.UUID(data["ranking_task_id"]),
+            generation_task_id=uuid.UUID(data["generation_task_id"]),
             ranking_prompt=data["ranking_prompt"],
             author=data["author"],
             raw_model_ranking=data["raw_model_ranking"],
             ranking=[uuid.UUID(gid) for gid in data["ranking"]],
+            ranking_reasoning=data["ranking_reasoning"],
             reasoning=data["reasoning"],
             raw_response=data["raw_response"],
             metadata=data["metadata"],

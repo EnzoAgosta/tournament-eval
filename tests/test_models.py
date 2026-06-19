@@ -91,17 +91,20 @@ from tournament_eval.models import (
             {
                 "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "ranking_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "generation_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "ranking_prompt": "Rank.",
                 "author": "test-model",
                 "raw_model_ranking": ["B", "A"],
                 "ranking": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
-                "reasoning": "some reasoning",
+                "ranking_reasoning": "some reasoning",
+                "reasoning": "some thinking trace",
                 "raw_response": "some raw response",
                 "metadata": {"cost": 0.1, "latency": 0.2},
             },
             RankingResult(
                 id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 ranking_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                generation_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 ranking_prompt="Rank.",
                 author="test-model",
                 raw_model_ranking=["B", "A"],
@@ -109,7 +112,8 @@ from tournament_eval.models import (
                     uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                     uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 ],
-                reasoning="some reasoning",
+                ranking_reasoning="some reasoning",
+                reasoning="some thinking trace",
                 raw_response="some raw response",
                 metadata={"cost": 0.1, "latency": 0.2},
             ),
@@ -118,15 +122,19 @@ from tournament_eval.models import (
             RankingFailure.from_json,
             {
                 "ranking_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "generation_task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "author": "test-model",
                 "error_type": "RuntimeError",
                 "message": "boom!",
+                "ranking_prompt": "the rendered prompt",
             },
             RankingFailure(
                 ranking_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                generation_task_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 author="test-model",
                 error_type="RuntimeError",
                 message="boom!",
+                ranking_prompt="the rendered prompt",
             ),
         ),
     ],
@@ -247,10 +255,12 @@ def test_ranking_task_from_json_fails_on_missing_arg(missing_arg: str) -> None:
     [
         "id",
         "ranking_task_id",
+        "generation_task_id",
         "ranking_prompt",
         "author",
         "raw_model_ranking",
         "ranking",
+        "ranking_reasoning",
         "reasoning",
         "raw_response",
         "metadata",
@@ -260,11 +270,13 @@ def test_ranking_result_from_json_fails_on_missing_arg(missing_arg: str) -> None
     data: RankingResultDict = {
         "id": str(uuid.uuid4()),
         "ranking_task_id": str(uuid.uuid4()),
+        "generation_task_id": str(uuid.uuid4()),
         "ranking_prompt": "Rank.",
         "author": "test-model",
         "raw_model_ranking": ["B", "A"],
         "ranking": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
-        "reasoning": "some reasoning",
+        "ranking_reasoning": "some reasoning",
+        "reasoning": "some thinking trace",
         "raw_response": "some raw response",
         "metadata": {"cost": 0.1, "latency": 0.2},
     }
@@ -277,17 +289,21 @@ def test_ranking_result_from_json_fails_on_missing_arg(missing_arg: str) -> None
     "missing_arg",
     [
         "ranking_task_id",
+        "generation_task_id",
         "author",
         "error_type",
         "message",
+        "ranking_prompt",
     ],
 )
 def test_ranking_failure_from_json_fails_on_missing_arg(missing_arg: str) -> None:
     data: RankingFailureDict = {
         "ranking_task_id": str(uuid.uuid4()),
+        "generation_task_id": str(uuid.uuid4()),
         "author": "test-model",
         "error_type": "RuntimeError",
         "message": "boom!",
+        "ranking_prompt": "the rendered prompt",
     }
     data.pop(missing_arg)  # type: ignore[misc]
     with pytest.raises(KeyError, match=missing_arg):

@@ -42,7 +42,7 @@ There's no Elo, no match history, no score that drifts as rankings accumulate. E
 > **A note on determinism.** Generation itself is *not* reproducible — models are sampled at a temperature, so two runs can differ. The order-invariance is a property of the aggregation math over a fixed set of rankings, not of the model outputs. If you need reproducible generation, pin temperature/seed on your agent's model settings.
 
 **Full reasoning capture.**
-Every ranker's reasoning is preserved alongside its ranking, so you can run the tournament once and analyze it many ways — which model values fluency over accuracy, which is most self-consistent, which one's reasoning tracks human preference. The rankings are the output; the reasoning is the audit trail.
+Every ranker's reasoning is preserved alongside its ranking — both the justification it wrote in its structured response and the thinking trace the model produced while ranking (when the provider surfaces one). So you can run the tournament once and analyze it many ways — which model values fluency over accuracy, which is most self-consistent, which one's reasoning tracks human preference. The rankings are the output; the reasoning is the audit trail.
 
 ## Not Elo, not pairwise
 
@@ -277,7 +277,16 @@ Reading a run back is per-file and typed — `read_generation_result_file`, `rea
 
 **Aggregation is intentionally out of scope.** The framework hands you the rankings and the reasoning; collapsing them into a verdict — Borda, Condorcet, Bradley–Terry, Elo over the pairwise implications, whatever fits — is a real methodological decision, not a detail to bury in a library. It's all ordinal-ranking math over data you already have on disk, so it's yours for now (and may arrive later as an opt-in convenience).
 
-Resolving the data is fair game, though — mapping a ranking's `GenerationResult` ids back to author names (via the `generations`) is a couple of lines, and it's the de-anonymization step for analysis, the line right before aggregation begins.
+Resolving the data is fair game, though — and there's a ready-made helper for the de-anonymization step. `deanonimize_ranking(ranking_result, generations)` maps a ranking's `GenerationResult` ids back to author names, best-first — the line right before aggregation begins:
+
+```python
+from tournament_eval import deanonimize_ranking
+
+authors_best_first = deanonimize_ranking(ranking_result, generations)
+# e.g. ["gpt-4o", "claude-sonnet-4-6", "llama-3.3-70b"]
+```
+
+It's a pure function over data you already have on disk (the `generations` from `generate_all` or `read_generation_result_file`), so it composes cleanly with whatever aggregation you choose.
 
 ## Tested and typed
 

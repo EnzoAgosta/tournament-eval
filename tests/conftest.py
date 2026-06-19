@@ -217,9 +217,11 @@ class RankingFailureFactory(Protocol):
         self,
         *,
         ranking_task_id: uuid.UUID | None = None,
+        generation_task_id: uuid.UUID | None = None,
         author: str = "test-model",
         error_type: str = "RuntimeError",
         message: str = "boom!",
+        ranking_prompt: str = "the rendered prompt",
     ) -> RankingFailure: ...
 
 
@@ -228,15 +230,19 @@ def make_ranking_failure() -> RankingFailureFactory:
     def _factory(
         *,
         ranking_task_id: uuid.UUID | None = None,
+        generation_task_id: uuid.UUID | None = None,
         author: str = "test-model",
         error_type: str = "RuntimeError",
         message: str = "boom!",
+        ranking_prompt: str = "the rendered prompt",
     ) -> RankingFailure:
         return RankingFailure(
             ranking_task_id=ranking_task_id or uuid.uuid4(),
+            generation_task_id=generation_task_id or uuid.uuid4(),
             author=author,
             error_type=error_type,
             message=message,
+            ranking_prompt=ranking_prompt,
         )
 
     return _factory
@@ -248,10 +254,12 @@ class RankingResultFactory(Protocol):
         *,
         id: uuid.UUID | None = None,
         ranking_task_id: uuid.UUID | None = None,
+        generation_task_id: uuid.UUID | None = None,
         ranking_prompt: str = "Rank.",
         author: str = "test-model",
         raw_model_ranking: list[str] | None = None,
         ranking: list[uuid.UUID] | None = None,
+        ranking_reasoning: str | None = None,
         reasoning: str | None = None,
         raw_response: str = "some raw response",
         metadata: dict[str, object] | None = None,
@@ -264,10 +272,12 @@ def make_ranking_result() -> RankingResultFactory:
         *,
         id: uuid.UUID | None = None,
         ranking_task_id: uuid.UUID | None = None,
+        generation_task_id: uuid.UUID | None = None,
         ranking_prompt: str = "Rank.",
         author: str = "test-model",
         raw_model_ranking: list[str] | None = None,
         ranking: list[uuid.UUID] | None = None,
+        ranking_reasoning: str | None = None,
         reasoning: str | None = None,
         raw_response: str = "some raw response",
         metadata: dict[str, object] | None = None,
@@ -275,10 +285,12 @@ def make_ranking_result() -> RankingResultFactory:
         return RankingResult(
             id=id or uuid.uuid4(),
             ranking_task_id=ranking_task_id or uuid.uuid4(),
+            generation_task_id=generation_task_id or uuid.uuid4(),
             ranking_prompt=ranking_prompt,
             author=author,
             raw_model_ranking=raw_model_ranking or [],
             ranking=ranking or [],
+            ranking_reasoning=ranking_reasoning,
             reasoning=reasoning,
             raw_response=raw_response,
             metadata=metadata or {},
