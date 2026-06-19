@@ -36,6 +36,7 @@ import pytest
 
 ollama = pytest.importorskip("pydantic_ai.models.ollama")
 pytest.importorskip("pydantic_ai.providers.ollama")
+pytest.importorskip("numpy")  # the aggregation smoke test uses copeland, which needs the analysis extra
 
 from pydantic import BaseModel  # noqa: E402
 from pydantic_ai import Agent  # noqa: E402
@@ -44,12 +45,16 @@ from pydantic_ai.providers.ollama import OllamaProvider  # noqa: E402
 
 from tournament_eval import (  # noqa: E402
     DefaultRankingTemplate,
+    ballots_from_rankings,
+    borda,
     build_generation_tasks,
     build_ranking_tasks,
     deanonymize_ranking,
     generate_all,
+    normalized_borda,
     rank_all,
 )
+from tournament_eval.aggregation.copeland import copeland  # noqa: E402
 from tournament_eval.models import GenerationResult, RankingFailure, RankingResult  # noqa: E402
 
 # A real Ollama server is a hard requirement, and the models must be pulled.
@@ -88,15 +93,17 @@ def _rank_agent(model_name: str, response_model: type[BaseModel]) -> Agent[None,
 
 @pytest.mark.integration
 async def test_end_to_end_tournament_against_ollama(tmp_path: Path) -> None:
-    """A full build → generate → rank → de-anonymize run against live local models.
+    """A full build → generate → rank → de-anonymize → aggregate run against live local models.
 
     Asserts the wiring holds: results are the right record types, authors resolve
     to the model names, usage metadata is populated, ``generation_task_id``
-    propagates from ranking tasks through to ranking results, and
-    ``deanonymize_ranking`` resolves ids to authors. Tolerates flaky rankings
-    (some ``RankingFailure`` is expected from small models) but requires at least
-    one successful generation and at least one successful ranking — zero of either
-    is a wiring break, not a model-quality issue.
+    propagates from ranking tasks through to ranking results,
+    ``deanonymize_ranking`` resolves ids to authors, and the rankings flow cleanly
+    through the aggregation package (ballots → Borda / normalized Borda / Copeland).
+    Tolerates flaky rankings (some ``RankingFailure`` is expected from small models)
+    but requires at least one successful generation and at least one successful
+    ranking — zero of either is a wiring break, not a model-quality issue. The
+    aggregation assertions check invariants that hold regardless of model quality.
     """
     if not _ollama_reachable():
         pytest.skip("no Ollama server reachable at http://localhost:11434 (start `ollama serve` and pull the models)")
@@ -187,3 +194,26 @@ async def test_end_to_end_tournament_against_ollama(tmp_path: Path) -> None:
         assert isinstance(ranking, RankingResult)
         assert ranking.ranking_reasoning is None or isinstance(ranking.ranking_reasoning, str)
         assert ranking.reasoning is None or isinstance(ranking.reasoning, str)
+
+    # 5. Aggregation smoke test: the real rankings flow through the aggregation package.
+    # These assert invariants that hold regardless of how well the models actually ranked,
+    # so they exercise the ballots → scores wiring, not model quality.
+    ballots = ballots_from_rankings(rankings, generations)
+    assert len(ballots) == len(rankings)
+    for ranking, ballot in zip(rankings, ballots, strict=True):
+        assert isinstance(ranking, RankingResult)
+        assert set(ballot).issubset(set(_MODELS))
+        assert len(ballot) == len(ranking.ranking)
+
+    borda_scores = borda(ballots)
+    assert set(borda_scores).issubset(set(_MODELS))
+    assert all(isinstance(score, float) for score in borda_scores.values())
+
+    normalized_scores = normalized_borda(ballots)
+    assert all(0.0 <= score <= 1.0 for score in normalized_scores.values())
+
+    # Copeland over the known universe: every model is scored (pinned by
+    # expected_contestants), and net wins-minus-losses sum to zero by construction.
+    copeland_scores = copeland(ballots, expected_contestants=set(_MODELS))
+    assert set(copeland_scores) == set(_MODELS)
+    assert sum(copeland_scores.values()) == pytest.approx(0.0)
