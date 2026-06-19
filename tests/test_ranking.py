@@ -1,9 +1,15 @@
+"""Tests for the ranking template — aliasing, prompt rendering, and the dynamic
+alias check (the static shape is now validated by pydantic-ai at the provider, so
+it isn't tested here)."""
+
 import pytest
+from pydantic import BaseModel
 
 from tests.conftest import GenerationResultFactory, RankingTaskFactory
 from tournament_eval.ranking import (
     DefaultRankingTemplate,
     ParsedRanking,
+    RankingResponse,
     alias_for_index,
 )
 
@@ -26,6 +32,10 @@ def test_alias_for_index_rolls_over_to_two_letters() -> None:
 def test_alias_for_index_last_two_letters_rolls_over_to_three() -> None:
     assert alias_for_index(701) == "ZZ"
     assert alias_for_index(702) == "AAA"
+
+
+def test_response_model_is_ranking_response() -> None:
+    assert DefaultRankingTemplate().response_model is RankingResponse
 
 
 def test_render_includes_task_prompt_ranking_prompt_and_candidates(
@@ -103,22 +113,10 @@ def test_render_skips_reasoning_line_when_candidate_has_none_even_if_enabled(
     assert "A reasoning:" not in prompt
 
 
-def test_schema_constrains_response_to_a_ranking_object() -> None:
-    schema = DefaultRankingTemplate().schema
-
-    assert schema["type"] == "object"
-    assert schema["required"] == ["ranking"]
-    assert schema["additionalProperties"] is False
-    properties = schema["properties"]
-    assert isinstance(properties, dict)
-    assert properties["ranking"]["type"] == "array"
-    assert properties["reasoning"]["type"] == "string"
-
-
 def test_parse_returns_ranking_and_reasoning() -> None:
     template = DefaultRankingTemplate()
 
-    parsed = template.parse({"ranking": ["B", "A"], "reasoning": "B reads better"}, {"A", "B"})
+    parsed = template.parse(RankingResponse(ranking=["B", "A"], reasoning="B reads better"), {"A", "B"})
 
     assert isinstance(parsed, ParsedRanking)
     assert parsed.ranking == ["B", "A"]
@@ -128,58 +126,34 @@ def test_parse_returns_ranking_and_reasoning() -> None:
 def test_parse_reasoning_is_none_when_absent() -> None:
     template = DefaultRankingTemplate()
 
-    parsed = template.parse({"ranking": ["A"]}, {"A"})
+    parsed = template.parse(RankingResponse(ranking=["A"], reasoning=None), {"A"})
 
     assert parsed.ranking == ["A"]
     assert parsed.reasoning is None
 
 
-def test_parse_raises_when_data_is_not_a_dict() -> None:
+def test_parse_raises_on_wrong_model_type() -> None:
+    class Other(BaseModel):
+        x: int
+
     template = DefaultRankingTemplate()
-    with pytest.raises(ValueError, match="Expected JSON object, got list"):
-        template.parse(["A"], {"A"})  # type: ignore[arg-type]
-
-
-def test_parse_raises_when_ranking_is_not_a_list() -> None:
-    template = DefaultRankingTemplate()
-    with pytest.raises(ValueError, match='"ranking" must be a list, got str'):
-        template.parse({"ranking": "A"}, {"A"})
-
-
-def test_parse_raises_when_ranking_entry_is_not_a_string() -> None:
-    template = DefaultRankingTemplate()
-    with pytest.raises(ValueError, match="Ranking entry must be a string, got int"):
-        template.parse({"ranking": [1]}, {"A"})
+    with pytest.raises(ValueError, match="Expected a RankingResponse"):
+        template.parse(Other(x=1), {"A"})
 
 
 def test_parse_raises_on_unknown_alias() -> None:
     template = DefaultRankingTemplate()
     with pytest.raises(ValueError, match="Unknown alias in ranking: 'Z'"):
-        template.parse({"ranking": ["Z"]}, {"A"})
+        template.parse(RankingResponse(ranking=["Z"]), {"A"})
 
 
 def test_parse_raises_on_duplicate_alias() -> None:
     template = DefaultRankingTemplate()
     with pytest.raises(ValueError, match="Duplicate alias in ranking: 'A'"):
-        template.parse({"ranking": ["A", "A"]}, {"A", "B"})
+        template.parse(RankingResponse(ranking=["A", "A"]), {"A", "B"})
 
 
 def test_parse_raises_when_aliases_are_missing() -> None:
     template = DefaultRankingTemplate()
     with pytest.raises(ValueError, match=r"Missing aliases in ranking: \['B'\]"):
-        template.parse({"ranking": ["A"]}, {"A", "B"})
-
-
-def test_parse_raises_when_reasoning_is_not_a_string() -> None:
-    template = DefaultRankingTemplate()
-    with pytest.raises(ValueError, match='"reasoning" must be a string, got int'):
-        template.parse({"ranking": ["A"], "reasoning": 1}, {"A"})
-
-
-def test_parse_accepts_explicit_null_reasoning() -> None:
-    template = DefaultRankingTemplate()
-
-    parsed = template.parse({"ranking": ["A"], "reasoning": None}, {"A"})
-
-    assert parsed.ranking == ["A"]
-    assert parsed.reasoning is None
+        template.parse(RankingResponse(ranking=["A"]), {"A", "B"})

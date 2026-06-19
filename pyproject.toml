@@ -8,18 +8,22 @@ version = "0.1.0"
 description = "Circular tournament evaluation framework for LLMs"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = ["httpx>=0.28.1", "orjson>=3.11.9"]
+dependencies = [
+    "pydantic-ai-slim>=1.107.0",
+]
 
 [project.optional-dependencies]
-openai = ["openai>=2.41.1"]
-anthropic = ["anthropic>=0.109.1"]
-bedrock = ["boto3>=1.43.29"]
-ollama = ["ollama>=0.6.2"]
-all = [
-    "anthropic>=0.109.1",
-    "boto3>=1.43.29",
-    "ollama>=0.6.2",
-    "openai>=2.41.1",
+openai = [
+    "openai>=2.43.0",
+]
+google = [
+    "google-genai>=2.9.0",
+]
+anthropic = [
+    "anthropic>=0.111.0",
+]
+bedrock = [
+    "boto3>=1.43.33",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -27,16 +31,11 @@ packages = ["src/tournament_eval"]
 
 [dependency-groups]
 dev = [
-    "anthropic>=0.109.1",
-    "boto3>=1.43.29",
     "mypy>=2.1.0",
-    "ollama>=0.6.2",
-    "openai>=2.41.1",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.16",
-    "types-boto3-custom",
+    "ruff>=0.15.18",
 ]
 
 [tool.ruff]
@@ -75,6 +74,3 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 files = ["src"]
-
-[tool.uv.sources]
-types-boto3-custom = { path = "vendored/types_boto3_custom-1.43.32-py3-none-any.whl" }

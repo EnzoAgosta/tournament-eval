@@ -17,8 +17,8 @@ file is fully reconstructable — group or filter on read.  Where the pipeline
 writes is whatever path you pass to ``generate_all`` / ``rank_all`` /
 ``build_ranking_tasks``.
 
-Writing is type-agnostic: orjson encodes :class:`uuid.UUID` and dataclasses
-natively, so one :func:`append_record` serialises every record type.  Reading is
+Writing is type-agnostic: :func:`json.dumps` (with a ``default`` that renders
+:class:`uuid.UUID` and dataclasses) serialises every record type.  Reading is
 per-type (it rebuilds the dataclass: ``str`` → ``UUID``, dict → dataclass), so
 each stream has its own reader.
 
@@ -35,10 +35,11 @@ makes each line atomic with respect to other in-flight calls — do not "optimis
 the write into a threaded or async one, or concurrent appends could interleave.
 """
 
+import dataclasses
+import json
+import uuid
 from collections.abc import Callable
 from pathlib import Path
-
-import orjson
 
 from tournament_eval.models import (
     GenerationFailure,
@@ -50,19 +51,33 @@ from tournament_eval.models import (
 )
 
 
+def _default(obj: object) -> object:
+    """JSON ``default`` for the records this module persists: UUIDs and dataclasses."""
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
+
+
+def _dumps(record: object) -> bytes:
+    return json.dumps(record, default=_default, separators=(",", ":")).encode()
+
+
 def append_record(path: str | Path, record: object) -> None:
     """Append one record as a JSON line to ``path``, creating parent dirs.
 
-    Type-agnostic: orjson serialises any dataclass/UUID, so the same function
-    persists results, failures, and tasks alike.  Pair it on read with the typed
-    reader for whatever you wrote (e.g. :func:`read_generation_result_file`).
+    Type-agnostic: the ``default`` renders :class:`uuid.UUID` and dataclasses, so
+    the same function persists results, failures, and tasks alike.  Pair it on
+    read with the typed reader for whatever you wrote (e.g.
+    :func:`read_generation_result_file`).
     """
     path = Path(path)
     if path.is_dir():
         raise IsADirectoryError(f"{path} is a directory, not a file")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as f:
-        f.write(orjson.dumps(record))
+        f.write(_dumps(record))
         f.write(b"\n")
 
 
@@ -75,7 +90,7 @@ def _read_file[T](path: str | Path, from_json: Callable[..., T]) -> list[T]:
     if not path.exists():
         return []
     with path.open("rb") as f:
-        return [from_json(orjson.loads(line)) for line in f if line.strip()]
+        return [from_json(json.loads(line)) for line in f if line.strip()]
 
 
 def read_generation_task_file(path: str | Path) -> list[GenerationTask]:

@@ -96,7 +96,10 @@ class GenerationResult:
     author: str
     """The model identifier that produced this output (e.g. ``"gpt-4o"``)."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
-    """Arbitrary extra data such as cost, latency, or token count."""
+    """Usage/cost data from the agent run (token counts, request count, ...).
+    Populated by the orchestration from pydantic-ai's ``RunUsage``; a kitchen-sink
+    dict so it can grow (cost via ``genai-prices``, latency, ...) without changing
+    the record shape."""
 
     @classmethod
     def from_json(cls, data: GenerationResultDict) -> GenerationResult:
@@ -217,7 +220,10 @@ class RankingResult:
     raw_response: str
     """The complete structured JSON response returned by the LLM."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
-    """Arbitrary extra data such as cost, latency, or token count."""
+    """Usage/cost data from the agent run (token counts, request count, ...).
+    Populated by the orchestration from pydantic-ai's ``RunUsage``; a kitchen-sink
+    dict so it can grow (cost via ``genai-prices``, latency, ...) without changing
+    the record shape."""
 
     @classmethod
     def from_json(cls, data: RankingResultDict) -> RankingResult:

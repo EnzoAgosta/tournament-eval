@@ -133,3 +133,9 @@ def test_read_ranking_result_file_returns_list_of_ranking_results(
     append_record(path, result1)
     append_record(path, result2)
     assert read_ranking_result_file(path) == [result1, result2]
+
+
+def test_append_record_raises_on_non_serialisable(tmp_path: Path) -> None:
+    path = tmp_path / "bad.jsonl"
+    with pytest.raises(TypeError, match="not JSON serialisable"):
+        append_record(path, object())

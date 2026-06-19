@@ -1,32 +1,26 @@
 """Shared test scaffolding.
 
-Two harnesses drive the clients offline against their *real* implementations:
+The client/wire-format tests are gone — pydantic-ai owns the LLM layer now, and we
+test our *orchestration* logic against pydantic-ai's offline test models:
 
-* ``http_mock`` / ``tracking_transport`` — :class:`httpx.MockTransport` builders.
-  Feed the transport to a real SDK client (``http_client=AsyncClient(transport=...)``)
-  or the built-in client (``client._transport = ...``); ``Recorder`` captures what
-  was sent so tests can assert the request the adapter produced.
-* ``bedrock_stub`` — a real ``bedrock-runtime`` client with ``invoke_model`` stubbed
-  via :class:`botocore.stub.Stubber`, returning a canned ``StreamingBody``.
+* :class:`pydantic_ai.models.test.TestModel` — auto-generates valid output from the
+  agent's ``output_type`` (text via ``custom_output_text``, structured via
+  ``custom_output_args``), no network.  We wrap it in tiny builders so each test
+  gets an agent with a controllable author (the model name) and output.
 
-Plus a Protocol-satisfying :class:`MockLLMClient` for the orchestration tests (which
-shouldn't care about any wire protocol) and the data factories.
+Plus the data factories used by the model/persistence/orchestration tests.
 """
 
-import io
 import uuid
-from collections.abc import Callable
-from typing import Protocol, cast
+from typing import Protocol
 
-import boto3
-import httpx
-import orjson
 import pytest
-from botocore.response import StreamingBody
-from botocore.stub import Stubber
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 
-from tournament_eval.llm.base import GenerationResponse, LLMClient, StructuredResponse
-from tournament_eval.llm.bedrock import BedrockRuntimeClient
 from tournament_eval.models import (
     GenerationFailure,
     GenerationResult,
@@ -37,88 +31,74 @@ from tournament_eval.models import (
 )
 
 
-class FakeTransport(httpx.MockTransport):
-    def __init__(self) -> None:
-        self.call_count = 0
-        self.handler = self._handler
-        self.error_code = 429
-        self.return_body = {"choices": [{"message": {"content": "ok"}}]}
-        self.fail_amount = 0
-        self.raise_error = False
+def generation_agent(
+    *,
+    text: str = "ok",
+    author: str = "test-model",
+) -> Agent[None, str]:
+    """A generation agent (``output_type=str``) backed by a :class:`TestModel`.
 
-    def _handler(self, _: httpx.Request) -> httpx.Response:
-        if self.fail_amount == self.call_count:
-            self.call_count += 1
-            return httpx.Response(200, json=self.return_body)
-        else:
-            self.call_count += 1
-            if self.raise_error:
-                raise httpx.TransportError("boom")
-            return httpx.Response(self.error_code, json=self.return_body)
-
-
-class MockLLMClient(LLMClient):
-    def __init__(self) -> None:
-        self.generation_response = GenerationResponse(text="ok", reasoning="because")
-        self.structured_response = StructuredResponse(data={"a": 1}, raw='{"a": 1}')
-        self.model = "test-model"
-        self.raise_on_enter = False
-        self.raise_on_exit = False
-
-    @property
-    def name(self) -> str:
-        return self.model
-
-    async def generate(self, prompt: str) -> GenerationResponse:  # noqa: ARG002
-        return self.generation_response
-
-    async def generate_structured(self, prompt: str, schema: dict[str, object]) -> StructuredResponse:  # noqa: ARG002
-        return self.structured_response
-
-    async def __aenter__(self) -> MockLLMClient:
-        if self.raise_on_enter:
-            raise RuntimeError("Enter boom")
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        if self.raise_on_exit:
-            raise RuntimeError("Exit boom")
-
-
-@pytest.fixture
-def test_transport() -> Callable[..., FakeTransport]:
-    def _make() -> FakeTransport:
-        return FakeTransport()
-
-    return _make
-
-
-@pytest.fixture
-def bedrock_stub() -> Callable[[object], tuple[BedrockRuntimeClient, Stubber]]:
-    """A real ``bedrock-runtime`` client with ``invoke_model`` stubbed.
-
-    Pass the JSON the model should "return"; get back the client and an un-entered
-    :class:`~botocore.stub.Stubber` (drive it with ``with stubber: ...``).  The payload
-    is wrapped in a :class:`~botocore.response.StreamingBody` exactly as boto hands it
-    back, so the transport's ``body.read()`` path is exercised for real.
+    ``author`` becomes the model name (and thus the result ``author``); ``text`` is
+    what it returns.  No network.
     """
+    return Agent(
+        TestModel(custom_output_text=text, model_name=author),
+        output_type=str,
+        name=None,  # leave author resolution to fall back to the model name
+    )
 
-    def _make(response_body: object) -> tuple[BedrockRuntimeClient, Stubber]:
-        client = boto3.client(
-            "bedrock-runtime",
-            region_name="us-east-1",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        stubber = Stubber(client)
-        payload = orjson.dumps(response_body)
-        stubber.add_response(
-            "invoke_model",
-            {"body": StreamingBody(io.BytesIO(payload), len(payload)), "contentType": "application/json"},
-        )
-        return cast(BedrockRuntimeClient, client), stubber
 
-    return _make
+def _raising_fn(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+    """A :class:`FunctionModel` body that always raises — backs the failure-path agents."""
+    raise RuntimeError("boom")
+
+
+def raising_generation_agent(*, author: str = "test-model") -> Agent[None, str]:
+    """A generation agent whose ``run`` always raises ``RuntimeError("boom")``."""
+    return Agent(FunctionModel(_raising_fn, model_name=author), output_type=str, name=None)
+
+
+def raising_ranking_agent(
+    *, author: str = "test-model", response_model: type[BaseModel] | None = None
+) -> Agent[None, BaseModel]:
+    """A ranking agent whose ``run`` always raises ``RuntimeError("boom")``."""
+    from tournament_eval.ranking import RankingResponse
+
+    return Agent(
+        FunctionModel(_raising_fn, model_name=author),
+        output_type=response_model or RankingResponse,
+        name=None,
+    )
+
+
+def ranking_agent(
+    *,
+    output: BaseModel | None = None,
+    output_args: dict[str, object] | None = None,
+    author: str = "test-model",
+    response_model: type[BaseModel] | None = None,
+) -> Agent[None, BaseModel]:
+    """A ranking agent backed by a :class:`TestModel` returning structured output.
+
+    Pass either a ready ``output`` model instance (its dict is sent as the tool
+    args) or raw ``output_args``.  ``response_model`` defaults to
+    :class:`~tournament_eval.ranking.RankingResponse`.
+    """
+    from tournament_eval.ranking import RankingResponse
+
+    model = response_model or RankingResponse
+    args: dict[str, object] | BaseModel
+    if output is not None:
+        args = output.model_dump()
+    elif output_args is not None:
+        args = output_args
+    else:
+        args = {"ranking": ["A"], "reasoning": "ok"}
+    return Agent(
+        TestModel(custom_output_args=args, model_name=author),
+        output_type=model,
+        name=None,
+    )
 
 
 class GenerationTaskFactory(Protocol):
