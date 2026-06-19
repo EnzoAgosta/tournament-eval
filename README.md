@@ -277,12 +277,12 @@ Reading a run back is per-file and typed — `read_generation_result_file`, `rea
 
 **Aggregation is intentionally out of scope.** The framework hands you the rankings and the reasoning; collapsing them into a verdict — Borda, Condorcet, Bradley–Terry, Elo over the pairwise implications, whatever fits — is a real methodological decision, not a detail to bury in a library. It's all ordinal-ranking math over data you already have on disk, so it's yours for now (and may arrive later as an opt-in convenience).
 
-Resolving the data is fair game, though — and there's a ready-made helper for the de-anonymization step. `deanonimize_ranking(ranking_result, generations)` maps a ranking's `GenerationResult` ids back to author names, best-first — the line right before aggregation begins:
+Resolving the data is fair game, though — and there's a ready-made helper for the de-anonymization step. `deanonymize_ranking(ranking_result, generations)` maps a ranking's `GenerationResult` ids back to author names, best-first — the line right before aggregation begins:
 
 ```python
-from tournament_eval import deanonimize_ranking
+from tournament_eval import deanonymize_ranking
 
-authors_best_first = deanonimize_ranking(ranking_result, generations)
+authors_best_first = deanonymize_ranking(ranking_result, generations)
 # e.g. ["gpt-4o", "claude-sonnet-4-6", "llama-3.3-70b"]
 ```
 

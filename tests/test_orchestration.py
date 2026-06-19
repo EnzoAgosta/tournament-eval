@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, TextPart, ThinkingPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -31,7 +32,7 @@ from tournament_eval.orchestration import (
     build_generation_tasks,
     build_ranking_task,
     build_ranking_tasks,
-    deanonimize_ranking,
+    deanonymize_ranking,
     generate_all,
     generate_one,
     rank_all,
@@ -674,6 +675,21 @@ async def test_rank_all_rejects_duplicate_authors(
         await rank_all([ranking_task], [gen], agents=[agent1, agent2])
 
 
+async def test_rank_all_rejects_agent_output_type_mismatch(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    # An agent wired to a different output_type than the (default) template's
+    # response_model is caught up front, not as a per-task RankingFailure in parse.
+    class OtherResponse(BaseModel):
+        winner: str
+
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    agent = ranking_agent(author="mismatch", response_model=OtherResponse, output_args={"winner": "A"})
+    with pytest.raises(ValueError, match="output_type"):
+        await rank_all([ranking_task], [gen], agents=[agent])
+
+
 def test_author_prefers_explicit_name() -> None:
     agent = generation_agent(text="x", author="the-model")
     agent.name = "explicit-label"  # an explicit name wins over the model name
@@ -731,7 +747,7 @@ async def test_rank_one_captures_reasoning_trace(
     assert result.reasoning == "weighing fluency vs accuracy"  # the thinking trace
 
 
-def test_deanonimize_ranking_maps_ids_to_authors(
+def test_deanonymize_ranking_maps_ids_to_authors(
     make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
 ) -> None:
     gen_a = make_generation_result(author="alpha")
@@ -740,12 +756,12 @@ def test_deanonimize_ranking_maps_ids_to_authors(
     # ranking is best-first in id space: [gen_b, gen_a, gen_c]
     result = make_ranking_result(ranking=[gen_b.id, gen_a.id, gen_c.id])
 
-    deanon = deanonimize_ranking(result, [gen_a, gen_b, gen_c])
+    deanon = deanonymize_ranking(result, [gen_a, gen_b, gen_c])
 
     assert deanon == ["beta", "alpha", "gamma"]
 
 
-def test_deanonimize_ranking_accepts_any_iterable(
+def test_deanonymize_ranking_accepts_any_iterable(
     make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
 ) -> None:
     gen_a = make_generation_result(author="alpha")
@@ -753,12 +769,12 @@ def test_deanonimize_ranking_accepts_any_iterable(
     result = make_ranking_result(ranking=[gen_a.id, gen_b.id])
 
     # A generator, not a list — the helper materialises it into the lookup.
-    deanon = deanonimize_ranking(result, (g for g in [gen_a, gen_b]))
+    deanon = deanonymize_ranking(result, (g for g in [gen_a, gen_b]))
 
     assert deanon == ["alpha", "beta"]
 
 
-def test_deanonimize_ranking_raises_on_unknown_id(
+def test_deanonymize_ranking_raises_on_unknown_id(
     make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
 ) -> None:
     gen_a = make_generation_result(author="alpha")
@@ -767,4 +783,4 @@ def test_deanonimize_ranking_raises_on_unknown_id(
 
     # A ranking referencing an id absent from `generations` is a data-integrity error.
     with pytest.raises(KeyError):
-        deanonimize_ranking(result, [gen_a])
+        deanonymize_ranking(result, [gen_a])

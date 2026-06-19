@@ -46,7 +46,7 @@ from tournament_eval import (  # noqa: E402
     DefaultRankingTemplate,
     build_generation_tasks,
     build_ranking_tasks,
-    deanonimize_ranking,
+    deanonymize_ranking,
     generate_all,
     rank_all,
 )
@@ -93,7 +93,7 @@ async def test_end_to_end_tournament_against_ollama(tmp_path: Path) -> None:
     Asserts the wiring holds: results are the right record types, authors resolve
     to the model names, usage metadata is populated, ``generation_task_id``
     propagates from ranking tasks through to ranking results, and
-    ``deanonimize_ranking`` resolves ids to authors. Tolerates flaky rankings
+    ``deanonymize_ranking`` resolves ids to authors. Tolerates flaky rankings
     (some ``RankingFailure`` is expected from small models) but requires at least
     one successful generation and at least one successful ranking — zero of either
     is a wiring break, not a model-quality issue.
@@ -174,8 +174,8 @@ async def test_end_to_end_tournament_against_ollama(tmp_path: Path) -> None:
         # The dynamic alias check passed, so ranking is a permutation of the task's candidate ids.
         ranked_task = next(rt for rt in ranking_tasks if rt.id == ranking.ranking_task_id)
         assert set(ranking.ranking) == set(ranked_task.generations.values())
-        # deanonimize_ranking resolves ids back to the contestants' authors.
-        authors_best_first = deanonimize_ranking(ranking, generations)
+        # deanonymize_ranking resolves ids back to the contestants' authors.
+        authors_best_first = deanonymize_ranking(ranking, generations)
         assert set(authors_best_first).issubset(set(_MODELS))
         assert len(authors_best_first) == len(ranking.ranking)
         # Usage metadata is populated on the ranking run too.

@@ -243,7 +243,10 @@ class RankingResult:
     surfaced one (mirrors :attr:`GenerationResult.reasoning`).  ``None`` when the
     model produced no thinking parts."""
     raw_response: str
-    """The complete structured JSON response returned by the LLM."""
+    """The model's structured ranking output, serialized to JSON.  pydantic-ai
+    validated and parsed the provider's reply into the template's ``response_model``;
+    this is *that* validated object re-serialized (``model_dump_json``), not the raw
+    provider wire bytes."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
     """Usage/cost data from the agent run (token counts, request count, ...).
     Populated by the orchestration from pydantic-ai's ``RunUsage``; a kitchen-sink

@@ -131,6 +131,23 @@ def _check_distinct_authors[DepsT, OutT](
     return authors
 
 
+def _check_output_types(agents: Iterable[_RankAgent], template: RankingTemplate) -> None:
+    """Raise if any ranking agent's ``output_type`` isn't the template's ``response_model``.
+
+    The template owns the response *shape* and the parser that reads it; an agent
+    wired to a different ``output_type`` would only surface as a per-task
+    :class:`RankingFailure` when :meth:`RankingTemplate.parse` rejects the instance.
+    Checking up front turns that into one loud, immediate error at the call boundary.
+    """
+    expected = template.response_model
+    mismatched = [_resolve_author(agent) for agent in agents if agent.output_type is not expected]
+    if mismatched:
+        raise ValueError(
+            f"Ranking agents {sorted(mismatched)!r} have an output_type that isn't the template's "
+            f"response_model ({expected.__name__}). Wire each with Agent(model, output_type=template.response_model)."
+        )
+
+
 def _extract_reasoning(messages: list[ModelMessage]) -> str | None:
     """Pull the reasoning trace out of a run's new messages.
 
@@ -563,7 +580,7 @@ async def rank_one(
             ranking=uuid_ranking,
             ranking_reasoning=parsed.reasoning,
             reasoning=_extract_reasoning(run.new_messages()),
-            raw_response=run.output.model_dump_json(),
+            raw_response=run.output.model_dump_json(),  # the validated output, not the raw wire bytes
             metadata=_usage_to_metadata(run.usage),
         )
     except Exception as exc:
@@ -638,8 +655,10 @@ async def rank_all(
         that now has a success (loaded from ``results_path`` plus produced this
         call), and ``failures`` every pair still without one.
     """
+    template = template or _DEFAULT_TEMPLATE
     agents_list = list(agents)
     _check_distinct_authors(agents_list)
+    _check_output_types(agents_list, template)
     generation_lookup = {result.id: result for result in generation_results}
     loaded = persistence.read_ranking_result_file(results_path) if results_path is not None else []
     valid_ids = {ranking_task.id for ranking_task in ranking_tasks}
@@ -674,7 +693,7 @@ async def rank_all(
     return ranking_results, ranking_failures
 
 
-def deanonimize_ranking(
+def deanonymize_ranking(
     ranking_result: RankingResult,
     generations: Iterable[GenerationResult],
 ) -> list[str]:
