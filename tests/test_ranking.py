@@ -52,10 +52,59 @@ def test_render_includes_task_prompt_ranking_prompt_and_candidates(
 
     assert "The models were given this task:\nWrite a haiku." in prompt
     assert "Rank by clarity." in prompt
-    assert "NO TIES ARE ALLOWED" in prompt
+    assert "NO TIES" in prompt
     assert "Candidates:" in prompt
     assert "A: output-a" in prompt
     assert "B: output-b" in prompt
+
+
+def test_render_states_candidate_count_and_enumerates_aliases(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    candidates = {
+        alias: make_generation_result(generation_prompt="p", output=f"o-{alias}") for alias in ["A", "B", "C", "D"]
+    }
+    template = DefaultRankingTemplate()
+
+    prompt = template.render(make_ranking_task(), candidates)
+
+    # Count and alias enumeration up front — the lever that cut missing-alias
+    # failures to zero in the live Ollama experiment.
+    assert "There are 4 candidates, labelled: A, B, C, D." in prompt
+    assert "exactly once" in prompt
+    assert "no omissions, no duplicates, no extras" in prompt
+
+
+def test_render_example_uses_the_actual_aliases(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    candidates = {
+        alias: make_generation_result(generation_prompt="p", output=f"o-{alias}") for alias in ["A", "B", "C"]
+    }
+    template = DefaultRankingTemplate()
+
+    prompt = template.render(make_ranking_task(), candidates)
+
+    # The format example reflects the real candidate set rather than a hardcoded
+    # ["A", "B", "C"] that misleads when the field size differs.
+    assert '["A", "B", "C"]' in prompt
+
+
+def test_render_is_mechanism_neutral(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    candidates = {"A": make_generation_result(output="o-a"), "B": make_generation_result(output="o-b")}
+    template = DefaultRankingTemplate()
+
+    prompt = template.render(make_ranking_task(), candidates)
+
+    # pydantic-ai delivers structured output via tool-calling, not raw JSON; the
+    # prompt must not assert a delivery mechanism that could mismatch and confuse
+    # weaker models.
+    assert "Respond ONLY with a JSON object" not in prompt
+    assert "Return two fields:" in prompt
+    assert "`ranking`" in prompt
+    assert "`reasoning`" in prompt
 
 
 def test_render_raises_on_no_candidates(make_ranking_task: RankingTaskFactory) -> None:
@@ -157,3 +206,21 @@ def test_parse_raises_when_aliases_are_missing() -> None:
     template = DefaultRankingTemplate()
     with pytest.raises(ValueError, match=r"Missing aliases in ranking: \['B'\]"):
         template.parse(RankingResponse(ranking=["A"]), {"A", "B"})
+
+
+def test_ranking_response_docstring_is_directive() -> None:
+    # pydantic-ai surfaces the response model's class docstring as the tool
+    # description, so it should reinforce the no-ties / no-omissions rule at the
+    # schema layer rather than just describe the type.
+    assert "strict total order" in RankingResponse.__doc__
+    assert "no ties" in RankingResponse.__doc__
+    assert "no omissions" in RankingResponse.__doc__
+
+
+def test_ranking_response_field_descriptions_enforce_completeness() -> None:
+    # Field descriptions are injected into the tool schema sent to every provider,
+    # so the ranking field should carry the every-alias-exactly-once rule.
+    fields = RankingResponse.model_fields
+    assert "exactly once" in fields["ranking"].description
+    assert "no omissions" in fields["ranking"].description
+    assert fields["reasoning"].description is not None

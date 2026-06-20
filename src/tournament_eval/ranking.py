@@ -26,7 +26,7 @@ import abc
 import dataclasses
 from collections.abc import Mapping
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tournament_eval.models import GenerationResult, RankingTask
 
@@ -127,12 +127,22 @@ class RankingTemplate(abc.ABC):
 
 
 class RankingResponse(BaseModel):
-    """The response model for :class:`DefaultRankingTemplate` — a strict total order."""
+    """A strict total order over every candidate alias — no ties, no omissions, no duplicates.
 
-    ranking: list[str]
-    """Aliases in ranked order, best first."""
-    reasoning: str | None = None
-    """The ranking model's explanation, if it provided one."""
+    ``ranking`` lists every alias best-first; ``reasoning`` briefly justifies the order.
+    The dynamic check that every alias from the task's candidate set appears exactly
+    once is applied by :meth:`RankingTemplate.parse` (it can't be expressed in a
+    static schema, since the candidate set isn't known at schema-definition time).
+    """
+
+    ranking: list[str] = Field(
+        description="Every candidate alias, best to worst. Each alias must appear exactly once "
+        "— no omissions, no duplicates, no extras, no ties.",
+    )
+    reasoning: str | None = Field(
+        default=None,
+        description="A short justification of the ranking.",
+    )
 
 
 class DefaultRankingTemplate(RankingTemplate):
@@ -176,17 +186,21 @@ class DefaultRankingTemplate(RankingTemplate):
             ]
         )
 
+        aliases = sorted(candidates.keys())
+        n = len(aliases)
+        example = ", ".join(f'"{a}"' for a in aliases)
         lines.extend(
             [
                 "",
-                "Respond ONLY with a JSON object in this exact format:",
-                '{"ranking": ["A", "B", "C"], "reasoning": "..."}',
+                f"There are {n} candidates, labelled: {', '.join(aliases)}.",
+                f"Your `ranking` must list every one of these {n} aliases exactly once — "
+                "no omissions, no duplicates, no extras — from best to worst.",
                 "",
-                'The "ranking" field must list every candidate alias exactly once, from best to worst. '
-                'Explain the reasoning behind your ranking in the "reasoning" field.',
+                "Return two fields:",
+                f"  - `ranking`: the {n} aliases in order, best to worst (e.g. [{example}]).",
+                "  - `reasoning`: a short justification of the order.",
                 "",
-                "NO TIES ARE ALLOWED. If two outputs appear equal, break the tie as you see fit "
-                'and explain why in the "reasoning" field.',
+                "NO TIES. If two outputs appear equal, break the tie as you see fit and explain why in `reasoning`.",
                 "",
                 "Candidates:",
                 "",
