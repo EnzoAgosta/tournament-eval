@@ -50,7 +50,8 @@ to score however you like.
 import asyncio
 import random
 import uuid
-from collections.abc import Iterable
+import warnings
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -181,6 +182,26 @@ def _usage_to_metadata(usage: RunUsage) -> dict[str, object]:
         "cache_read_tokens": usage.cache_read_tokens,
         "requests": usage.requests,
     }
+
+
+def _notify[OutT](hook: Callable[[OutT], None] | None, outcome: OutT, *, stage: str) -> None:
+    """Invoke a per-outcome progress callback, swallowing a buggy hook's error.
+
+    A progress hook (print, log, tqdm) is the user's concern, not the run's, so a
+    broken hook mustn't sink a batch of model calls: a raised exception is turned
+    into a :class:`UserWarning` and the run continues.  Revisit if a louder policy
+    is wanted.  ``stage`` labels the warning so it's clear which stage's hook broke.
+    """
+    if hook is None:
+        return
+    try:
+        hook(outcome)
+    except Exception as err:
+        warnings.warn(
+            f"{stage} progress callback raised {type(err).__name__}: {err}; "
+            "the run continues but the hook is broken and should be fixed.",
+            stacklevel=2,
+        )
 
 
 def build_generation_task(
@@ -327,6 +348,33 @@ async def generate_one(
     return result
 
 
+async def _generate_and_notify(
+    task: GenerationTask,
+    agent: _GenAgent,
+    *,
+    results_path: str | Path | None,
+    failures_path: str | Path | None,
+    on_result: Callable[[GenerationResult], None] | None,
+    on_failure: Callable[[GenerationFailure], None] | None,
+) -> GenerationResult | GenerationFailure:
+    """Run :func:`generate_one` and fire the matching progress callback as it lands.
+
+    The callback fires *after* ``generate_one`` returns, which is *after* the
+    record has been appended to disk (``append_record`` is sync and awaited-free),
+    so a notified outcome is always a persisted one.  A raising hook is swallowed
+    by :func:`_notify` so it can't sink the batch.  This is the per-coroutine seam
+    that makes :func:`generate_all`'s ``asyncio.gather`` observable outcome-by-
+    outcome; it is internal because :func:`generate_one` itself stays
+    callback-free (its caller already gets the value synchronously).
+    """
+    outcome = await generate_one(task, agent, results_path=results_path, failures_path=failures_path)
+    if isinstance(outcome, GenerationResult):
+        _notify(on_result, outcome, stage="generate_all")
+    else:
+        _notify(on_failure, outcome, stage="generate_all")
+    return outcome
+
+
 def _generation_result_from_run(
     task: GenerationTask,
     agent: _GenAgent,
@@ -349,6 +397,8 @@ async def generate_all(
     *,
     results_path: str | Path | None = None,
     failures_path: str | Path | None = None,
+    on_result: Callable[[GenerationResult], None] | None = None,
+    on_failure: Callable[[GenerationFailure], None] | None = None,
 ) -> tuple[list[GenerationResult], list[GenerationFailure]]:
     """Run every generation agent against every task to produce GenerationResults.
 
@@ -378,6 +428,17 @@ async def generate_all(
         If set, the GenerationFailures file: each failure is appended as it lands.
         It is a write-only log - not read for resume - so across reruns it may hold
         several entries for a pair that kept failing.
+    on_result : Callable[[GenerationResult], None] | None
+        Optional sync callback fired with each :class:`GenerationResult` as it
+        lands, *after* it has been persisted to ``results_path`` (so "notified"
+        means "safely on disk").  Use it for progress reporting (print, tqdm).
+        Not fired for successes loaded from ``results_path`` on resume (those
+        were never run this call).  A raising hook is swallowed into a
+        :class:`UserWarning` so a broken progress callback can't sink the batch.
+    on_failure : Callable[[GenerationFailure], None] | None
+        Optional sync callback fired with each :class:`GenerationFailure` as it
+        lands (after it's been appended to ``failures_path``).  Same semantics as
+        ``on_result`` for resume and error-swalling.
 
     Returns
     -------
@@ -397,7 +458,14 @@ async def generate_all(
         if result.generation_task_id in valid_ids and result.author in valid_authors
     }
     coros = [
-        generate_one(task, agent, results_path=results_path, failures_path=failures_path)
+        _generate_and_notify(
+            task,
+            agent,
+            results_path=results_path,
+            failures_path=failures_path,
+            on_result=on_result,
+            on_failure=on_failure,
+        )
         for task in tasks
         for agent in agents_list
         if (task.id, _resolve_author(agent)) not in done
@@ -601,6 +669,39 @@ async def rank_one(
     return result
 
 
+async def _rank_and_notify(
+    ranking_task: RankingTask,
+    agent: _RankAgent,
+    generation_lookup: dict[uuid.UUID, GenerationResult],
+    *,
+    template: RankingTemplate,
+    results_path: str | Path | None,
+    failures_path: str | Path | None,
+    on_result: Callable[[RankingResult], None] | None,
+    on_failure: Callable[[RankingFailure], None] | None,
+) -> RankingResult | RankingFailure:
+    """Run :func:`rank_one` and fire the matching progress callback as it lands.
+
+    Mirrors :func:`_generate_and_notify` for the ranking stage: the callback fires
+    *after* :func:`rank_one` returns (and so after the record is persisted), and a
+    raising hook is swallowed by :func:`_notify`.  Internal for the same reason -
+    :func:`rank_one` stays callback-free.
+    """
+    outcome = await rank_one(
+        ranking_task,
+        agent,
+        generation_lookup,
+        template=template,
+        results_path=results_path,
+        failures_path=failures_path,
+    )
+    if isinstance(outcome, RankingResult):
+        _notify(on_result, outcome, stage="rank_all")
+    else:
+        _notify(on_failure, outcome, stage="rank_all")
+    return outcome
+
+
 async def rank_all(
     ranking_tasks: list[RankingTask],
     generation_results: list[GenerationResult],
@@ -609,6 +710,8 @@ async def rank_all(
     template: RankingTemplate | None = None,
     results_path: str | Path | None = None,
     failures_path: str | Path | None = None,
+    on_result: Callable[[RankingResult], None] | None = None,
+    on_failure: Callable[[RankingFailure], None] | None = None,
 ) -> tuple[list[RankingResult], list[RankingFailure]]:
     """Run every ranking agent against every RankingTask.
 
@@ -647,6 +750,14 @@ async def rank_all(
     failures_path : str | Path | None
         If set, the RankingFailures file: each failure is appended as it lands.
         A write-only log (not read for resume).
+    on_result : Callable[[RankingResult], None] | None
+        Optional sync callback fired with each :class:`RankingResult` as it lands,
+        *after* it has been persisted to ``results_path``.  Same semantics as
+        :func:`generate_all`'s ``on_result``: not fired for resume-loaded
+        successes, and a raising hook is swallowed into a :class:`UserWarning`.
+    on_failure : Callable[[RankingFailure], None] | None
+        Optional sync callback fired with each :class:`RankingFailure` as it
+        lands (after it's been appended to ``failures_path``); see ``on_result``.
 
     Returns
     -------
@@ -669,13 +780,15 @@ async def rank_all(
         if result.ranking_task_id in valid_ids and result.author in valid_authors
     }
     coros = [
-        rank_one(
+        _rank_and_notify(
             ranking_task,
             agent,
             generation_lookup,
             template=template,
             results_path=results_path,
             failures_path=failures_path,
+            on_result=on_result,
+            on_failure=on_failure,
         )
         for ranking_task in ranking_tasks
         for agent in agents_list

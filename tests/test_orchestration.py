@@ -194,14 +194,13 @@ async def test_generate_all_reads_generation_results_from_results_path(
 
     await generate_one(task, agent1, results_path=results_path)
 
-    # client1 already succeeded; a re-run with client2 must skip client1 (resume).
     agent2 = generation_agent(text="two", author="client2")
     results, failures = await generate_all([task], agents=[agent1, agent2], results_path=results_path)
 
     assert len(failures) == 0
     assert len(results) == 2
     by_author = {r.author: r for r in results}
-    assert by_author["client1"].output == "one"  # loaded, not re-run
+    assert by_author["client1"].output == "one"
     assert by_author["client2"].output == "two"
 
 
@@ -241,7 +240,7 @@ async def test_generate_all_ignores_records_outside_current_universe(
 async def test_generate_all_rejects_duplicate_authors(
     make_generation_task: GenerationTaskFactory,
 ) -> None:
-    # Two agents whose model names collide — same author, so resume would corrupt.
+
     agent1 = generation_agent(text="one", author="dup")
     agent2 = generation_agent(text="two", author="dup")
     with pytest.raises(ValueError, match="Duplicate agent authors"):
@@ -251,7 +250,6 @@ async def test_generate_all_rejects_duplicate_authors(
 async def test_generate_all_distinct_name_overrides_model_name(
     make_generation_task: GenerationTaskFactory,
 ) -> None:
-    # Same model name, distinct agent.name → distinct authors (the temperature-ablation case).
 
     a_hot = Agent(TestModel(custom_output_text="hot", model_name="gpt-4o"), output_type=str, name="gpt-4o-hot")
     a_cold = Agent(TestModel(custom_output_text="cold", model_name="gpt-4o"), output_type=str, name="gpt-4o-cold")
@@ -281,8 +279,7 @@ def test_build_generation_task_saves_to_tasks_path(tmp_path: Path) -> None:
 
 
 def test_build_generation_task_no_resume_always_new_id(tmp_path: Path) -> None:
-    # Singular builder never resumes — two calls produce distinct ids even for the
-    # same prompt (resume is a batch concern; use build_generation_tasks for that).
+
     tasks_path = tmp_path / "generation_tasks.jsonl"
     t1 = build_generation_task("same prompt", tasks_path=tasks_path)
     t2 = build_generation_task("same prompt", tasks_path=tasks_path)
@@ -298,7 +295,7 @@ def test_build_generation_tasks_returns_tasks_in_order(tmp_path: Path) -> None:
 
 
 def test_build_generation_tasks_accepts_an_iterable(tmp_path: Path) -> None:
-    # An open text file (single-pass iterable) works — the typical naive usage.
+
     path = tmp_path / "sentences.txt"
     path.write_text("alpha\nbeta\ngamma\n")
     with open(path) as f:
@@ -307,34 +304,33 @@ def test_build_generation_tasks_accepts_an_iterable(tmp_path: Path) -> None:
 
 
 def test_build_generation_tasks_requires_tasks_path() -> None:
-    # tasks_path is required — persistence is the whole point (guards the naive
-    # footgun where forgetting the path silently breaks resume).
+
     with pytest.raises(TypeError):
-        build_generation_tasks(["one"])  # type: ignore[call-arg]
+        build_generation_tasks(["one"])
 
 
 def test_build_generation_tasks_collapses_duplicate_prompts(tmp_path: Path) -> None:
     tasks_path = tmp_path / "generation_tasks.jsonl"
     tasks = build_generation_tasks(["hello", "world", "hello"], tasks_path=tasks_path)
-    assert len(tasks) == 2  # duplicate "hello" collapsed to one task
+    assert len(tasks) == 2
     assert [t.generation_prompt for t in tasks] == ["hello", "world"]
-    assert tasks_path.read_text().count("\n") == 2  # only unique prompts persisted
+    assert tasks_path.read_text().count("\n") == 2
 
 
 def test_build_generation_tasks_reuses_existing_on_rerun(tmp_path: Path) -> None:
-    # The whole point: ids stay stable across reruns, so generate_all's resume matches.
+
     tasks_path = tmp_path / "generation_tasks.jsonl"
     first = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
     second = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
-    assert [t.id for t in second] == [t.id for t in first]  # same ids, reused
-    assert tasks_path.read_text().count("\n") == 2  # nothing new appended
+    assert [t.id for t in second] == [t.id for t in first]
+    assert tasks_path.read_text().count("\n") == 2
 
 
 def test_build_generation_tasks_adds_new_prompts_without_touching_existing(tmp_path: Path) -> None:
     tasks_path = tmp_path / "generation_tasks.jsonl"
     first = build_generation_tasks(["hello", "world"], tasks_path=tasks_path)
     second = build_generation_tasks(["hello", "world", "bye"], tasks_path=tasks_path)
-    # hello/world reused (same ids); bye is new.
+
     by_prompt = {t.generation_prompt: t for t in second}
     assert by_prompt["hello"].id == next(t.id for t in first if t.generation_prompt == "hello")
     assert by_prompt["world"].id == next(t.id for t in first if t.generation_prompt == "world")
@@ -343,7 +339,7 @@ def test_build_generation_tasks_adds_new_prompts_without_touching_existing(tmp_p
 
 
 async def test_build_generation_tasks_resume_end_to_end(tmp_path: Path) -> None:
-    # The flagship promise: build → generate → rerun the exact same script → resume.
+
     tasks_path = tmp_path / "generation_tasks.jsonl"
     results_path = tmp_path / "generations.jsonl"
     failures_path = tmp_path / "generation_failures.jsonl"
@@ -355,10 +351,9 @@ async def test_build_generation_tasks_resume_end_to_end(tmp_path: Path) -> None:
     assert len(results) == 2
     first_ids = {r.id for r in results}
 
-    # Rerun the exact same script — tasks reused (stable ids), generation skipped.
     tasks_again = build_generation_tasks(prompts, tasks_path=tasks_path)
     results_again, _ = await generate_all(tasks_again, [agent], results_path=results_path, failures_path=failures_path)
-    assert {r.id for r in results_again} == first_ids  # loaded, not regenerated
+    assert {r.id for r in results_again} == first_ids
 
 
 def test_build_ranking_task(make_generation_result: GenerationResultFactory) -> None:
@@ -430,7 +425,7 @@ def test_build_ranking_tasks_reuses_existing(
     )
     assert len(ranking_tasks) == 1
     new_ranking_task = ranking_tasks[0]
-    assert new_ranking_task.id == ranking_task.id  # frozen: reused, not rebuilt
+    assert new_ranking_task.id == ranking_task.id
     assert new_ranking_task.generations == ranking_task.generations
     assert new_ranking_task.generations["A"] == old_result.id
 
@@ -459,7 +454,7 @@ async def test_rank_one_returns_ranking_result(
     assert result.raw_model_ranking == ["B", "A"]
     assert result.ranking == [gen_b.id, gen_a.id]
     assert result.ranking_reasoning == "b is better"
-    assert result.reasoning is None  # TestModel produces no thinking parts
+    assert result.reasoning is None
     assert json.loads(result.raw_response) == {"ranking": ["B", "A"], "reasoning": "b is better"}
     assert ranking_task.ranking_prompt in result.ranking_prompt
     assert "output_tokens" in result.metadata
@@ -480,7 +475,7 @@ async def test_rank_one_returns_ranking_failure_on_error(
     assert result.author == "boom-ranker"
     assert result.error_type == "RuntimeError"
     assert result.message == "boom"
-    assert result.ranking_prompt  # the rendered prompt that triggered the failure
+    assert result.ranking_prompt
 
 
 async def test_rank_one_returns_ranking_failure_on_unknown_alias(
@@ -488,8 +483,7 @@ async def test_rank_one_returns_ranking_failure_on_unknown_alias(
 ) -> None:
     gen = make_generation_result()
     ranking_task = make_ranking_task(generations={"A": gen.id})
-    # The model returns an alias not in the task — passes pydantic validation (it's a
-    # list[str]) but fails the dynamic alias check in the template.
+
     agent = ranking_agent(output_args={"ranking": ["Z"]}, author="ranker")
 
     result = await rank_one(ranking_task, agent, {gen.id: gen})
@@ -500,7 +494,7 @@ async def test_rank_one_returns_ranking_failure_on_unknown_alias(
     assert result.author == "ranker"
     assert result.error_type == "ValueError"
     assert "Z" in result.message
-    assert result.ranking_prompt  # the rendered prompt that triggered the failure
+    assert result.ranking_prompt
 
 
 async def test_rank_one_saves_to_results_path(
@@ -633,14 +627,13 @@ async def test_rank_all_reads_ranking_results_from_results_path(
 
     await rank_one(ranking_task, agent1, {gen.id: gen}, results_path=results_path)
 
-    # client1 already succeeded; re-run must skip it (resume) rather than re-rank.
     agent1_again = ranking_agent(output_args={"ranking": ["A"], "reasoning": "changed"}, author="client1")
     results, failures = await rank_all([ranking_task], [gen], agents=[agent1_again, agent2], results_path=results_path)
 
     assert len(failures) == 0
     assert len(results) == 2
     by_author = {result.author: result for result in results}
-    assert by_author["client1"].ranking_reasoning == "one"  # loaded, not re-ranked
+    assert by_author["client1"].ranking_reasoning == "one"
     assert by_author["client2"].ranking_reasoning == "two"
 
 
@@ -652,7 +645,6 @@ async def test_rank_all_ignores_records_outside_current_universe(
     path = tmp_path / "rankings.jsonl"
     agent = ranking_agent(output_args={"ranking": ["A"], "reasoning": "old"}, author="test-model")
 
-    # Record a result for a *different* ranking task — it must not count toward this run.
     await rank_one(make_ranking_task(generations={"A": gen.id}), agent, {gen.id: gen}, results_path=path)
     agent_new = ranking_agent(output_args={"ranking": ["A"], "reasoning": "new"}, author="test-model")
 
@@ -661,7 +653,7 @@ async def test_rank_all_ignores_records_outside_current_universe(
     assert len(failures) == 0
     assert len(results) == 1
     assert results[0].ranking_task_id == ranking_task.id
-    assert results[0].ranking_reasoning == "new"  # ranked this run, not the stale loaded record
+    assert results[0].ranking_reasoning == "new"
 
 
 async def test_rank_all_rejects_duplicate_authors(
@@ -678,8 +670,7 @@ async def test_rank_all_rejects_duplicate_authors(
 async def test_rank_all_rejects_agent_output_type_mismatch(
     make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
 ) -> None:
-    # An agent wired to a different output_type than the (default) template's
-    # response_model is caught up front, not as a per-task RankingFailure in parse.
+
     class OtherResponse(BaseModel):
         winner: str
 
@@ -692,18 +683,18 @@ async def test_rank_all_rejects_agent_output_type_mismatch(
 
 def test_author_prefers_explicit_name() -> None:
     agent = generation_agent(text="x", author="the-model")
-    agent.name = "explicit-label"  # an explicit name wins over the model name
+    agent.name = "explicit-label"
     assert _resolve_author(agent) == "explicit-label"
 
 
 def test_author_falls_back_to_string_model_name() -> None:
-    # A deferred string/KnownModelName model: agent.model stays a str until first run.
+
     agent = Agent("some-model-id", defer_model_check=True, output_type=str)
     assert _resolve_author(agent) == "some-model-id"
 
 
 def test_author_raises_when_unresolvable() -> None:
-    agent = Agent(model=None, output_type=str)  # no name, no model
+    agent = Agent(model=None, output_type=str)
     with pytest.raises(ValueError, match="no resolvable author"):
         _resolve_author(agent)
 
@@ -726,7 +717,7 @@ async def test_generate_one_captures_reasoning_trace(make_generation_task: Gener
 async def test_rank_one_captures_reasoning_trace(
     make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
 ) -> None:
-    # The ranker's thinking trace is captured separately from its ranking justification.
+
     from tournament_eval.ranking import RankingResponse
 
     def fn(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
@@ -743,8 +734,8 @@ async def test_rank_one_captures_reasoning_trace(
     agent = Agent(FunctionModel(fn, model_name="ranker"), output_type=RankingResponse)
     result = await rank_one(ranking_task, agent, {gen.id: gen})
     assert isinstance(result, RankingResult)
-    assert result.ranking_reasoning == "A is clearer"  # the structured-output justification
-    assert result.reasoning == "weighing fluency vs accuracy"  # the thinking trace
+    assert result.ranking_reasoning == "A is clearer"
+    assert result.reasoning == "weighing fluency vs accuracy"
 
 
 def test_deanonymize_ranking_maps_ids_to_authors(
@@ -753,7 +744,7 @@ def test_deanonymize_ranking_maps_ids_to_authors(
     gen_a = make_generation_result(author="alpha")
     gen_b = make_generation_result(author="beta")
     gen_c = make_generation_result(author="gamma")
-    # ranking is best-first in id space: [gen_b, gen_a, gen_c]
+
     result = make_ranking_result(ranking=[gen_b.id, gen_a.id, gen_c.id])
 
     deanon = deanonymize_ranking(result, [gen_a, gen_b, gen_c])
@@ -768,7 +759,6 @@ def test_deanonymize_ranking_accepts_any_iterable(
     gen_b = make_generation_result(author="beta")
     result = make_ranking_result(ranking=[gen_a.id, gen_b.id])
 
-    # A generator, not a list — the helper materialises it into the lookup.
     deanon = deanonymize_ranking(result, (g for g in [gen_a, gen_b]))
 
     assert deanon == ["alpha", "beta"]
@@ -778,9 +768,149 @@ def test_deanonymize_ranking_raises_on_unknown_id(
     make_generation_result: GenerationResultFactory, make_ranking_result: RankingResultFactory
 ) -> None:
     gen_a = make_generation_result(author="alpha")
-    other = make_generation_result(author="orphan")  # not in the ranking's candidate set
+    other = make_generation_result(author="orphan")
     result = make_ranking_result(ranking=[gen_a.id, other.id])
 
-    # A ranking referencing an id absent from `generations` is a data-integrity error.
     with pytest.raises(KeyError):
         deanonymize_ranking(result, [gen_a])
+
+
+async def test_generate_all_fires_on_result_for_each_success(
+    make_generation_task: GenerationTaskFactory,
+) -> None:
+    agent1 = generation_agent(text="one", author="c1")
+    agent2 = generation_agent(text="two", author="c2")
+    task = make_generation_task()
+
+    seen: list[GenerationResult] = []
+    results, failures = await generate_all([task], agents=[agent1, agent2], on_result=seen.append)
+
+    assert failures == []
+    assert len(results) == 2
+
+    assert len(seen) == 2
+    assert all(isinstance(r, GenerationResult) for r in seen)
+    assert {r.output for r in seen} == {"one", "two"}
+
+
+async def test_generate_all_fires_on_failure_for_each_failure(
+    make_generation_task: GenerationTaskFactory,
+) -> None:
+    bad = raising_generation_agent(author="bad")
+    good = generation_agent(text="ok", author="good")
+    task = make_generation_task()
+
+    results_seen: list[GenerationResult] = []
+    failures_seen: list[GenerationFailure] = []
+    results, failures = await generate_all(
+        [task],
+        agents=[bad, good],
+        on_result=results_seen.append,
+        on_failure=failures_seen.append,
+    )
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    assert len(results_seen) == 1
+    assert len(failures_seen) == 1
+    assert isinstance(failures_seen[0], GenerationFailure)
+    assert failures_seen[0].author == "bad"
+
+
+async def test_generate_all_callback_fires_after_persistence(
+    make_generation_task: GenerationTaskFactory, tmp_path: Path
+) -> None:
+    agent = generation_agent(text="ok", author="c1")
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+
+    def on_result(_r: GenerationResult) -> None:
+        assert results_path.exists()
+        assert results_path.read_bytes().count(b"\n") >= 1
+
+    await generate_all([task], agents=[agent], results_path=results_path, on_result=on_result)
+
+
+async def test_generate_all_resume_does_not_fire_callback_for_loaded_successes(
+    make_generation_task: GenerationTaskFactory, tmp_path: Path
+) -> None:
+    task = make_generation_task()
+    results_path = tmp_path / "results.jsonl"
+    agent = generation_agent(text="ok", author="c1")
+
+    seen_first: list[GenerationResult] = []
+    await generate_all([task], agents=[agent], results_path=results_path, on_result=seen_first.append)
+    assert len(seen_first) == 1
+
+    seen_second: list[GenerationResult] = []
+    await generate_all([task], agents=[agent], results_path=results_path, on_result=seen_second.append)
+    assert seen_second == []
+
+
+async def test_generate_all_swallows_raising_callback_as_warning(
+    make_generation_task: GenerationTaskFactory,
+) -> None:
+    def bad_hook(_r: GenerationResult) -> None:
+        raise RuntimeError("hook is broken")
+
+    agent = generation_agent(text="ok", author="c1")
+    task = make_generation_task()
+
+    with pytest.warns(UserWarning, match="progress callback raised"):
+        results, failures = await generate_all([task], agents=[agent], on_result=bad_hook)
+
+    assert failures == []
+    assert len(results) == 1
+
+
+async def test_rank_all_fires_on_result_for_each_success(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    agent1 = ranking_agent(output_args={"ranking": ["A"], "reasoning": "one"}, author="c1")
+    agent2 = ranking_agent(output_args={"ranking": ["A"], "reasoning": "two"}, author="c2")
+
+    seen: list[RankingResult] = []
+    results, failures = await rank_all([ranking_task], [gen], agents=[agent1, agent2], on_result=seen.append)
+
+    assert failures == []
+    assert len(results) == 2
+    assert len(seen) == 2
+    assert all(isinstance(r, RankingResult) for r in seen)
+    assert {r.ranking_reasoning for r in seen} == {"one", "two"}
+
+
+async def test_rank_all_fires_on_failure_for_each_failure(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    bad = raising_ranking_agent(author="bad")
+    good = ranking_agent(output_args={"ranking": ["A"], "reasoning": "ok"}, author="good")
+
+    failures_seen: list[RankingFailure] = []
+    results, failures = await rank_all([ranking_task], [gen], agents=[bad, good], on_failure=failures_seen.append)
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    assert len(failures_seen) == 1
+    assert isinstance(failures_seen[0], RankingFailure)
+    assert failures_seen[0].author == "bad"
+
+
+async def test_rank_all_swallows_raising_callback_as_warning(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    def bad_hook(_r: RankingResult) -> None:
+        raise RuntimeError("hook is broken")
+
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    agent = ranking_agent(output_args={"ranking": ["A"], "reasoning": "ok"}, author="c1")
+
+    with pytest.warns(UserWarning, match="progress callback raised"):
+        results, failures = await rank_all([ranking_task], [gen], agents=[agent], on_result=bad_hook)
+
+    assert failures == []
+    assert len(results) == 1

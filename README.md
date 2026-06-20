@@ -242,6 +242,25 @@ agents = [
 
 `max_concurrency` defaults to unbounded — fine for a local server you control, but against a rate-limited hosted API you'll want a conservative value, per-agent or as a shared limiter. The same limit applies whether you call the batch `generate_all` / `rank_all` or the single-shot `generate_one` / `rank_one`.
 
+### Progress callbacks
+
+A batch fans out concurrently and returns only when everything's done, so a big run is a blank screen until the end. `generate_all` and `rank_all` take two optional sync callbacks — `on_result` and `on_failure` — fired with each `GenerationResult`/`RankingResult` or `GenerationFailure`/`RankingFailure` as it lands, **after** it's been persisted to disk (so "notified" means "safely on disk"). They're `None` by default and not fired for successes loaded from `results_path` on resume (those were never run this call). A callback that raises is swallowed into a `UserWarning` — a broken progress hook can't sink a batch of model calls.
+
+```python
+from tqdm.auto import tqdm
+
+pbar = tqdm(total=len(tasks) * len(gen_agents))
+results, failures = await generate_all(
+    tasks, gen_agents,
+    results_path="run/generations.jsonl",
+    on_result=lambda _: pbar.update(1),
+    on_failure=lambda _: pbar.update(1),
+)
+pbar.close()
+```
+
+The callbacks are deliberately typed and minimal (one concrete type each, no dict/event protocol, no index/count — the caller already knows the total). `generate_one` / `rank_one` stay callback-free: their caller already receives the outcome synchronously.
+
 ## Persistence & resume
 
 A tournament is expensive — many model calls — so the pipeline streams every result and failure to disk *as it lands*. You choose the file paths; there's no directory layout or naming convention to learn. Typically one flat JSONL file per stream:
