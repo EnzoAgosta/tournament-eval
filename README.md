@@ -182,6 +182,8 @@ Each stage fans its work out concurrently with `asyncio.gather` and calls `agent
 
 Ranking responses are validated strictly: the static shape of the response is validated by Pydantic AI at the provider (against the template's `response_model`), and the *dynamic* rule — the ranking must list every candidate alias exactly once, no unknowns, no duplicates, no missing entries, no ties — is checked by the template afterward. A malformed ranking is a failure, not a silent best guess.
 
+A `RankingFailure` is debuggable, not just a dead end: it carries the rendered `ranking_prompt` (what was asked) and a `details` payload extracted best-effort from the exception chain (what the model answered wrong). `details` is a kitchen-sink dict (like `metadata`) populated with whatever the failure path exposes — `validation_errors` (pydantic's per-field errors, each carrying the failing `input`) when the response failed validation; `model_output` (the full emitted ranking) when the run succeeded but the dynamic alias check rejected it; `cause_type`/`cause_message` for the wrapped exception; `body` when Pydantic AI surfaces a response body. `None` when nothing structured was captured, leaving `message` as the only breadcrumb.
+
 Every result carries `metadata` with the run's usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `requests`) from Pydantic AI's `RunUsage` — a kitchen-sink dict that can grow to hold cost (via [`genai-prices`](https://github.com/pydantic/genai-prices)), latency, and more without changing the record shape.
 
 ## Building generation tasks

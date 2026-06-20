@@ -98,9 +98,6 @@ def test_render_is_mechanism_neutral(
 
     prompt = template.render(make_ranking_task(), candidates)
 
-    # pydantic-ai delivers structured output via tool-calling, not raw JSON; the
-    # prompt must not assert a delivery mechanism that could mismatch and confuse
-    # weaker models.
     assert "Respond ONLY with a JSON object" not in prompt
     assert "Return two fields:" in prompt
     assert "`ranking`" in prompt
@@ -209,18 +206,15 @@ def test_parse_raises_when_aliases_are_missing() -> None:
 
 
 def test_ranking_response_docstring_is_directive() -> None:
-    # pydantic-ai surfaces the response model's class docstring as the tool
-    # description, so it should reinforce the no-ties / no-omissions rule at the
-    # schema layer rather than just describe the type.
-    assert "strict total order" in RankingResponse.__doc__
-    assert "no ties" in RankingResponse.__doc__
-    assert "no omissions" in RankingResponse.__doc__
+
+    assert "strict total order" in RankingResponse.__doc__  # type: ignore[operator]
+    assert "no ties" in RankingResponse.__doc__  # type: ignore[operator]
+    assert "no omissions" in RankingResponse.__doc__  # type: ignore[operator]
 
 
 def test_ranking_response_field_descriptions_enforce_completeness() -> None:
-    # Field descriptions are injected into the tool schema sent to every provider,
-    # so the ranking field should carry the every-alias-exactly-once rule.
+
     fields = RankingResponse.model_fields
-    assert "exactly once" in fields["ranking"].description
-    assert "no omissions" in fields["ranking"].description
+    assert "exactly once" in fields["ranking"].description  # type: ignore[operator]
+    assert "no omissions" in fields["ranking"].description  # type: ignore[operator]
     assert fields["reasoning"].description is not None

@@ -118,8 +118,6 @@ def matrix(
 
     expected = set(expected_contestants) if expected_contestants is not None else None
 
-    # One pass to validate, retain (the input may be a single-use iterator), and gather
-    # the contestant universe; ballots are read-only, so no per-ballot copy is needed.
     materialized: list[Ballot] = []
     seen: set[str] = set()
     for ballot in ballots:
@@ -146,9 +144,6 @@ def matrix(
         idx = [index[label] for label in ballot]
         k = len(idx)
         if k > 1:
-            # A strict ranking of k contestants contributes one win for every ordered
-            # (higher, lower) pair — exactly the strict upper triangle of an all-ones
-            # k x k matrix, scattered into above at the contestants' rows/cols.
             above[np.ix_(idx, idx)] += np.triu(np.ones((k, k), dtype=int), 1)
 
     return PairwiseTally(contestants=contestants, above=above)
@@ -207,8 +202,7 @@ def copeland(
     """
     tally = matrix(ballots, expected_contestants=expected_contestants, strict=strict)
     above = tally.above
-    # beats[i, j] is True when i takes the head-to-head majority over j (and so loses to
-    # nobody on the diagonal, where above == above.T). net wins = (beats) - (beaten).
+
     beats = above > above.T
     beaten = above < above.T
     net = beats.sum(axis=1).astype(int) - beaten.sum(axis=1).astype(int)

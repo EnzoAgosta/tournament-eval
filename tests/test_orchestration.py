@@ -11,7 +11,16 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
-from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, TextPart, ThinkingPart, ToolCallPart
+from pydantic_ai import (
+    Agent,
+    ModelMessage,
+    ModelResponse,
+    RequestUsage,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    UnexpectedModelBehavior,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -27,6 +36,7 @@ from tests.conftest import (
 )
 from tournament_eval.models import GenerationFailure, GenerationResult, RankingFailure, RankingResult, RankingTask
 from tournament_eval.orchestration import (
+    _extract_ranking_failure_details,
     _resolve_author,
     build_generation_task,
     build_generation_tasks,
@@ -38,7 +48,8 @@ from tournament_eval.orchestration import (
     rank_all,
     rank_one,
 )
-from tournament_eval.persistence import _dumps
+from tournament_eval.persistence import _dumps, read_ranking_failure_file
+from tournament_eval.ranking import DefaultRankingTemplate, RankingResponse
 
 
 async def test_generate_one_returns_generation_result(make_generation_task: GenerationTaskFactory) -> None:
@@ -306,7 +317,7 @@ def test_build_generation_tasks_accepts_an_iterable(tmp_path: Path) -> None:
 def test_build_generation_tasks_requires_tasks_path() -> None:
 
     with pytest.raises(TypeError):
-        build_generation_tasks(["one"])
+        build_generation_tasks(["one"])  # type: ignore[call-arg]
 
 
 def test_build_generation_tasks_collapses_duplicate_prompts(tmp_path: Path) -> None:
@@ -484,7 +495,7 @@ async def test_rank_one_returns_ranking_failure_on_unknown_alias(
     gen = make_generation_result()
     ranking_task = make_ranking_task(generations={"A": gen.id})
 
-    agent = ranking_agent(output_args={"ranking": ["Z"]}, author="ranker")
+    agent = ranking_agent(output_args={"ranking": ["Z"], "reasoning": "ok"}, author="ranker")
 
     result = await rank_one(ranking_task, agent, {gen.id: gen})
 
@@ -525,6 +536,165 @@ async def test_rank_one_saves_to_failures_path(
     assert isinstance(result, RankingFailure)
     with open(failures_path, "rb") as f:
         assert f.read() == _dumps(result) + b"\n"
+
+
+async def test_rank_one_failure_details_captures_model_output_when_alias_check_fails(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+
+    gen_a = make_generation_result(author="a")
+    gen_b = make_generation_result(author="b")
+    ranking_task = make_ranking_task(generations={"A": gen_a.id, "B": gen_b.id})
+    # Valid RankingResponse shape, but duplicates "A" and omits "B" — fails parse().
+    agent = ranking_agent(output_args={"ranking": ["A", "A"], "reasoning": "tied them"}, author="ranker")
+
+    result = await rank_one(ranking_task, agent, {gen_a.id: gen_a, gen_b.id: gen_b})
+
+    assert isinstance(result, RankingFailure)
+    assert result.error_type == "ValueError"
+    assert result.details is not None
+    model_output = result.details["model_output"]
+    assert isinstance(model_output, str)
+    assert json.loads(model_output) == {"ranking": ["A", "A"], "reasoning": "tied them"}
+
+
+async def test_rank_one_failure_details_captures_validation_errors_on_pydantic_failure(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+
+    gen = make_generation_result(author="a")
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+
+    def emit_malformed(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        # 'ranking' as a string instead of a list — fails pydantic validation every call.
+        return ModelResponse(parts=[ToolCallPart("final_result", {"ranking": "not-a-list", "reasoning": "x"})])
+
+    agent = Agent(
+        FunctionModel(emit_malformed, model_name="bad"),
+        output_type=DefaultRankingTemplate().response_model,
+        name="bad",
+        retries=1,
+    )
+
+    result = await rank_one(ranking_task, agent, {gen.id: gen})
+
+    assert isinstance(result, RankingFailure)
+    assert result.error_type == "UnexpectedModelBehavior"
+    assert result.details is not None
+    assert result.details["cause_type"] == "ValidationError"
+    errors = result.details["validation_errors"]
+    assert isinstance(errors, list)
+    assert len(errors) >= 1
+
+    assert errors[0]["input"] == "not-a-list"
+    assert errors[0]["loc"] == ["ranking"]
+
+
+async def test_rank_one_failure_details_captures_cause_on_misc_failure(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+
+    gen = make_generation_result(author="a")
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+
+    def emit_empty(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[])
+
+    agent = Agent(
+        FunctionModel(emit_empty, model_name="empty"),
+        output_type=DefaultRankingTemplate().response_model,
+        name="empty",
+        retries=1,
+    )
+
+    result = await rank_one(ranking_task, agent, {gen.id: gen})
+
+    assert isinstance(result, RankingFailure)
+    assert result.details is not None
+    assert "cause_type" in result.details
+    assert "cause_message" in result.details
+    # No pydantic validation involved, so no validation_errors key.
+    assert "validation_errors" not in result.details
+    assert "model_output" not in result.details
+
+
+async def test_rank_one_failure_details_captures_cause_even_on_a_bare_runtime_error(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+
+    gen = make_generation_result()
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+    agent = raising_ranking_agent(author="boom-ranker")
+
+    result = await rank_one(ranking_task, agent, {gen.id: gen})
+
+    assert isinstance(result, RankingFailure)
+    assert result.error_type == "RuntimeError"
+    assert result.details is not None
+    assert result.details["cause_type"] == "ExceptionGroup"
+
+    assert "validation_errors" not in result.details
+    assert "model_output" not in result.details
+
+
+async def test_rank_one_failure_details_round_trips_through_persistence(
+    make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory, tmp_path: Path
+) -> None:
+
+    gen = make_generation_result(author="a")
+    ranking_task = make_ranking_task(generations={"A": gen.id})
+
+    def emit_malformed(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart("final_result", {"ranking": "not-a-list", "reasoning": "x"})])
+
+    agent = Agent(
+        FunctionModel(emit_malformed, model_name="bad"),
+        output_type=DefaultRankingTemplate().response_model,
+        name="bad",
+        retries=1,
+    )
+    failures_path = tmp_path / "ranking_failures.jsonl"
+
+    result = await rank_one(ranking_task, agent, {gen.id: gen}, failures_path=failures_path)
+    assert isinstance(result, RankingFailure)
+    assert result.details is not None
+
+    [restored] = read_ranking_failure_file(failures_path)
+    assert restored == result
+    assert restored.details == result.details
+    assert restored.details is not None
+    assert restored.details["cause_type"] == "ValidationError"
+
+
+def test_extract_ranking_failure_details_returns_none_for_a_truly_bare_exception() -> None:
+
+    assert _extract_ranking_failure_details(RuntimeError("boom")) is None
+
+
+def test_extract_ranking_failure_details_captures_unexpected_model_behavior_body() -> None:
+
+    exc = UnexpectedModelBehavior("unexpected status 500", body='{"error":"rate limited"}')
+    details = _extract_ranking_failure_details(exc)
+    assert details is not None
+
+    assert json.loads(details["body"]) == {"error": "rate limited"}  # type: ignore[arg-type]
+
+
+def test_extract_ranking_failure_details_skips_validation_errors_that_wont_report() -> None:
+
+    # validation_errors is simply omitted rather than populated with garbage.
+
+    class BrokenValidationError(ValueError):
+        def errors(self) -> list[dict[str, object]]:
+            raise RuntimeError("this validation error can't report")
+
+    cause = BrokenValidationError("broken")
+    exc = RuntimeError("wrapped")
+    exc.__cause__ = cause
+    details = _extract_ranking_failure_details(exc)
+    assert details is not None
+    assert details["cause_type"] == "BrokenValidationError"
+    assert "validation_errors" not in details
 
 
 async def test_rank_all_returns_list_of_ranking_results(
@@ -717,8 +887,6 @@ async def test_generate_one_captures_reasoning_trace(make_generation_task: Gener
 async def test_rank_one_captures_reasoning_trace(
     make_ranking_task: RankingTaskFactory, make_generation_result: GenerationResultFactory
 ) -> None:
-
-    from tournament_eval.ranking import RankingResponse
 
     def fn(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
         return ModelResponse(

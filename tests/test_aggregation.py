@@ -13,10 +13,7 @@ from tournament_eval.aggregation import ballots_from_rankings, positional
 
 
 def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
-    # The analysis extra must stay optional: importing the package, the aggregation
-    # namespace, and even the pairwise submodule must not load numpy — only *calling*
-    # a pairwise method should.  Run in a fresh interpreter because other tests in this
-    # process import numpy directly.
+
     result = subprocess.run(
         [
             sys.executable,
@@ -150,7 +147,6 @@ def test_ballots_from_rankings_accepts_single_pass_iterators(
     gen_beta = make_generation_result(author="beta")
     ranking_result = make_ranking_result(ranking=[gen_alpha.id, gen_beta.id])
 
-    # Both arguments are generators, materialized once internally.
     ballots = ballots_from_rankings(
         (r for r in [ranking_result]),
         (g for g in [gen_alpha, gen_beta]),

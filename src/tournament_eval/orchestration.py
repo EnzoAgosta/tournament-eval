@@ -75,9 +75,7 @@ from tournament_eval.ranking import (
 
 _DEFAULT_TEMPLATE: RankingTemplate = DefaultRankingTemplate()
 
-# Type aliases: generation agents produce ``str``; ranking agents produce the
-# template's response model.  Kept loose (``Agent[None, object]``) at the batch
-# boundary so a list of agents with a shared response model still type-checks.
+
 _GenAgent = Agent[None, str]
 _RankAgent = Agent[None, BaseModel]
 
@@ -96,7 +94,7 @@ def _resolve_author[DepsT, OutT](agent: Agent[DepsT, OutT]) -> str:
     model = agent.model
     if isinstance(model, Model):
         return model.model_name
-    if model:  # a str / KnownModelName literal (e.g. deferred-model case)
+    if model:
         return str(model)
     raise ValueError(
         f"Agent has no resolvable author: set agent.name= or give it a model. (name={name!r}, model={model!r})"
@@ -197,6 +195,61 @@ def _notify[OutT](hook: Callable[[OutT], None] | None, outcome: OutT, *, stage: 
         )
 
 
+def _extract_ranking_failure_details(
+    exc: BaseException,
+    *,
+    model_output: BaseModel | None = None,
+) -> dict[str, object] | None:
+    """Pull whatever structured diagnostic payload a ranking failure exposes.
+
+    Failures reach here from two places inside :func:`rank_one`:
+
+    * the agent run itself raised (pydantic validation exhausted its retries, the
+      model returned an empty response, called the wrong tool, hit an API error, …);
+    * the agent run *succeeded* but the template's dynamic alias check raised — in
+      which case ``model_output`` is the validated response the model actually
+      emitted, and we capture it so a user can see what it answered.
+
+    The exception chain is best-effort probed; any attribute that's missing or
+    raises leaves its key out rather than failing.  Returns ``None`` when nothing
+    structured was found (the plain ``message`` is then the only breadcrumb).
+
+    Keys, populated when available: ``model_output`` (the emitted ranking, as
+    ``model_dump_json``), ``validation_errors`` (pydantic's error list, each with
+    the failing field's ``input``), ``cause_type`` / ``cause_message`` (the wrapped
+    exception), ``body`` (pydantic-ai's response body when it surfaces one).
+    """
+    details: dict[str, object] = {}
+
+    if model_output is not None:
+        details["model_output"] = model_output.model_dump_json()
+
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        details["cause_type"] = type(cause).__name__
+        details["cause_message"] = str(cause)
+
+        errors = getattr(cause, "errors", None)
+        if callable(errors):
+            try:
+                normalised: list[dict[str, object]] = []
+                for err in errors():
+                    err = dict(err)
+                    loc = err.get("loc")
+                    if isinstance(loc, tuple):
+                        err["loc"] = list(loc)
+                    normalised.append(err)
+                details["validation_errors"] = normalised
+            except Exception:
+                pass
+
+    body = getattr(exc, "body", None)
+    if body is not None:
+        details["body"] = body
+
+    return details or None
+
+
 def build_generation_task(
     prompt: str,
     *,
@@ -272,12 +325,10 @@ def build_generation_tasks(
     seen: set[str] = set()
     for prompt in prompts:
         if prompt in seen:
-            # Duplicate within this call: reuse the first occurrence's task rather
-            # than emitting a second one — keeps one task per unique prompt.
             continue
         seen.add(prompt)
         if prompt in existing:
-            built.append(existing[prompt])  # frozen: reuse, never rebuild
+            built.append(existing[prompt])
         else:
             built.append(build_generation_task(prompt, tasks_path=tasks_path))
     return built
@@ -569,7 +620,7 @@ def build_ranking_tasks(
         if not results:
             continue
         if task.id in existing:
-            ranking_tasks.append(existing[task.id])  # frozen: reuse, never rebuild
+            ranking_tasks.append(existing[task.id])
         else:
             ranking_tasks.append(
                 build_ranking_task(results, ranking_prompt, tasks_path=tasks_path, random_seed=random_seed)
@@ -607,6 +658,7 @@ async def rank_one(
     prompt = template.render(ranking_task, candidates)
     result: RankingResult | RankingFailure
 
+    run: AgentRunResult[BaseModel] | None = None
     try:
         run = await agent.run(prompt, infer_name=False)
         parsed = template.parse(run.output, set(ranking_task.generations.keys()))
@@ -621,7 +673,7 @@ async def rank_one(
             ranking=uuid_ranking,
             ranking_reasoning=parsed.reasoning,
             reasoning=_extract_reasoning(run.new_messages()),
-            raw_response=run.output.model_dump_json(),  # the validated output, not the raw wire bytes
+            raw_response=run.output.model_dump_json(),
             metadata=_usage_to_metadata(run.usage),
         )
     except Exception as exc:
@@ -632,6 +684,7 @@ async def rank_one(
             error_type=type(exc).__name__,
             message=str(exc),
             ranking_prompt=prompt,
+            details=_extract_ranking_failure_details(exc, model_output=run.output if run is not None else None),
         )
 
     if isinstance(result, RankingResult):

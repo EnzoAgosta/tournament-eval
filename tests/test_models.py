@@ -297,7 +297,7 @@ def test_ranking_result_from_json_fails_on_missing_arg(missing_arg: str) -> None
     ],
 )
 def test_ranking_failure_from_json_fails_on_missing_arg(missing_arg: str) -> None:
-    data: RankingFailureDict = {
+    data: RankingFailureDict = {  # type: ignore[typeddict-item]
         "ranking_task_id": str(uuid.uuid4()),
         "generation_task_id": str(uuid.uuid4()),
         "author": "test-model",

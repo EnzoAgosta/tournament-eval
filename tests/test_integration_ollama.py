@@ -28,8 +28,6 @@ routes through the OpenAI-compatible ``/v1/chat/completions`` endpoint). Install
 it with ``uv sync --all-extras`` or ``pip install "pydantic-ai-slim[openai]"``.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

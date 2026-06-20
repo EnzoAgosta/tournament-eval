@@ -16,21 +16,14 @@ from tournament_eval.aggregation._imports import require
 
 
 def test_require_raises_a_clear_importerror_for_a_missing_module() -> None:
-    # The analysis-extra guard: require() turns a missing heavy dep into one actionable
-    # ImportError naming the package and the install command — not a bare
-    # ModuleNotFoundError.  Tested in-process (against a name that can't exist) so the
-    # error branch is covered directly; the subprocess test above proves the full
-    # import-the-module-then-call-it path end to end.
+
     with pytest.raises(ImportError, match="is required here but isn't installed") as exc_info:
         require("definitely_not_a_real_module_xyzzy")
     assert "analysis" in str(exc_info.value)
 
 
 def test_pairwise_matrix_raises_a_clear_importerror_when_numpy_is_missing() -> None:
-    # The analysis extra is optional: calling a pairwise method without numpy installed
-    # must surface one actionable ImportError naming the package and the install command
-    # — not a bare ModuleNotFoundError.  Simulated in a fresh interpreter by blocking
-    # numpy on the meta path, so the local environment's numpy (a dev dep) doesn't mask it.
+
     import subprocess
     import sys
 
@@ -54,7 +47,7 @@ def test_pairwise_matrix_raises_a_clear_importerror_when_numpy_is_missing() -> N
         text=True,
     )
     assert result.returncode != 0
-    # The clear message, not a bare ModuleNotFoundError from a raw `import numpy`.
+
     assert "'numpy' is required here" in result.stderr
     assert "analysis" in result.stderr
 

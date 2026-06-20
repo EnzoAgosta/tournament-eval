@@ -158,6 +158,7 @@ class RankingFailureDict(TypedDict):
     error_type: str
     message: str
     ranking_prompt: str
+    details: dict[str, object] | None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -180,6 +181,28 @@ class RankingFailure:
     """The exact ranking prompt sent to the model, verbatim (the rendered template,
     candidates and all), so a failure is debuggable without rebuilding the
     :class:`RankingTask`."""
+    details: dict[str, object] | None = dataclasses.field(default=None)
+    """Structured diagnostic payload extracted from the exception chain, when the
+    failure came from the agent run or the template's dynamic check — a kitchen-sink
+    dict so it can grow without changing the record shape (mirroring
+    :attr:`GenerationResult.metadata`).  ``None`` when nothing was captured.
+
+    Populated by the orchestration on a best-effort basis from whatever the
+    exception chain exposes:
+
+    * ``model_output`` — the model's full validated response (as ``model_dump_json``),
+      present when ``agent.run`` *succeeded* but the template's dynamic alias check
+      rejected the ranking (so the output was emitted but is malformed).
+    * ``validation_errors`` — pydantic's error list (each dict carrying the failing
+      field's ``input``), present when the model's response failed pydantic
+      validation and pydantic-ai exhausted its retries.
+    * ``cause_type`` / ``cause_message`` — the wrapped exception's type and message,
+      present when the failure has a ``__cause__``.
+    * ``body`` — the response body, present when pydantic-ai surfaces one (e.g.
+      on an unexpected HTTP response).
+
+    A model that simply retried-out with nothing structured attached leaves this
+    ``None`` — ``message`` is then the only breadcrumb."""
 
     @classmethod
     def from_json(cls, data: RankingFailureDict) -> RankingFailure:
@@ -191,6 +214,7 @@ class RankingFailure:
             error_type=data["error_type"],
             message=data["message"],
             ranking_prompt=data["ranking_prompt"],
+            details=data.get("details"),
         )
 
 

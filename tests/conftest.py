@@ -44,7 +44,7 @@ def generation_agent(
     return Agent(
         TestModel(custom_output_text=text, model_name=author),
         output_type=str,
-        name=None,  # leave author resolution to fall back to the model name
+        name=None,
     )
 
 
@@ -222,6 +222,7 @@ class RankingFailureFactory(Protocol):
         error_type: str = "RuntimeError",
         message: str = "boom!",
         ranking_prompt: str = "the rendered prompt",
+        details: dict[str, object] | None = None,
     ) -> RankingFailure: ...
 
 
@@ -235,6 +236,7 @@ def make_ranking_failure() -> RankingFailureFactory:
         error_type: str = "RuntimeError",
         message: str = "boom!",
         ranking_prompt: str = "the rendered prompt",
+        details: dict[str, object] | None = None,
     ) -> RankingFailure:
         return RankingFailure(
             ranking_task_id=ranking_task_id or uuid.uuid4(),
@@ -243,6 +245,7 @@ def make_ranking_failure() -> RankingFailureFactory:
             error_type=error_type,
             message=message,
             ranking_prompt=ranking_prompt,
+            details=details,
         )
 
     return _factory
