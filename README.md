@@ -324,27 +324,34 @@ Reading a run back is per-file and typed — `read_generation_result_file`, `rea
 
 Collapsing per-ranker rankings into a verdict is a real methodological choice, so the `aggregation` package treats it as a **convenience, not a mandate**: every method is a pure function over plain *ballots* (one ranker's verdict as author labels, best-first), so you can use one, several, or none — and still do your own math over the data on disk. One invariant holds throughout: **ballots are strict total orders, never ties** (the shape `DefaultRankingTemplate` guarantees).
 
-`ballots_from_rankings` bridges a run to the methods, de-anonymizing each ranking's ids back to author labels:
+The package is organised by aggregation style, and you reach for the style you want:
+
+- `tournament_eval.aggregation.positional` — Borda and its normalized variant. Pure Python, **no `numpy` needed**. Scores depend on *where* each ballot ranks a contestant.
+- `tournament_eval.aggregation.pairwise` — the head-to-head tally (`matrix`) and the methods built on it (Copeland, with more to come). Need `numpy` (the `analysis` extra) **at call time only** — importing the module doesn't pull it in, so a plain tournament run stays dependency-free until you actually call a pairwise method.
+
+`ballots_from_rankings` bridges a run to either style, de-anonymizing each ranking's ids back to author labels:
 
 ```python
-from tournament_eval import ballots_from_rankings, borda, normalized_borda
+from tournament_eval.aggregation import ballots_from_rankings, positional, pairwise
 
 ballots = ballots_from_rankings(rankings, generations)
-borda(ballots)             # raw Borda points; assumes full participation
-normalized_borda(ballots)  # mean per-ballot score in [0, 1]; fair under unequal participation
+positional.borda(ballots)              # raw Borda points; assumes full participation
+positional.normalized_borda(ballots)   # mean per-ballot score in [0, 1]; fair under unequal participation
 ```
 
-`borda` and `normalized_borda` are pure counting and always available. The pairwise methods need `numpy` (the `analysis` extra) and live in their own submodules, so a base `import tournament_eval` stays dependency-free:
+The pairwise methods need `numpy` (the `analysis` extra) — but only when you call them, not when you import:
 
 ```python
 # pip install "tournament-eval[analysis]"
-from tournament_eval.aggregation.pairwise import pairwise_matrix   # head-to-head count matrix
-from tournament_eval.aggregation.copeland import copeland           # wins − losses; a Condorcet winner tops it
+from tournament_eval.aggregation import pairwise
 
-copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})
+pairwise.matrix(ballots)               # the head-to-head count matrix; the shared primitive
+pairwise.copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})  # wins − losses; a Condorcet winner tops it
 ```
 
-`pairwise_matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). More methods (Schulze, Bradley–Terry, …) will land here over time — conservatively, only ones whose results we're confident are accurate.
+`pairwise.matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). Calling a pairwise method without the `analysis` extra raises a clear `ImportError` naming the package and the install command — importing the module never fails. More methods (Schulze, Bradley–Terry, …) will land in `pairwise` over time — conservatively, only ones whose results we're confident are accurate.
+
+Every method that would otherwise silently gloss over something (a sub-two-candidate ballot, an omitted expected contestant) takes a `strict=False` flag: flip it to `True` to raise instead. `strict` means one thing across the package — "raise on anything that would otherwise be handled silently."
 
 Prefer to roll your own? `deanonymize_ranking(ranking_result, generations)` returns one ranking's authors best-first — a pure function over the `generations` you already have (from `generate_all` or `read_generation_result_file`), composing with whatever aggregation you choose.
 

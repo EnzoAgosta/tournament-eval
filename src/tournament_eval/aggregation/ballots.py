@@ -39,7 +39,7 @@ def ballots_from_rankings(
     Each ranking ranks :class:`~tournament_eval.models.GenerationResult` *ids* (in
     anonymized alias space); this resolves every one back to its contestant ``author``
     via :func:`~tournament_eval.orchestration.deanonymize_ranking`, yielding one
-    :data:`Ballot` per ranking — exactly what :func:`~tournament_eval.aggregation.borda.borda`
+    :data:`Ballot` per ranking — exactly what :func:`~tournament_eval.aggregation.positional.borda`
     and the other methods expect.
 
     Parameters

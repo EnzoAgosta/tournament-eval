@@ -991,10 +991,12 @@ openai = [
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "numpy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
@@ -1012,10 +1014,12 @@ provides-extras = ["openai", "google", "anthropic", "bedrock", "analysis"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=2.1.0" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.15.18" },
+    { name = "scipy", specifier = ">=1.17.1" },
 ]
 
 [[package]]

@@ -13,12 +13,6 @@ methodology — the tasks, the aliasing, the resume, the persistence — and lea
 pydantic-ai for everything LLM.
 """
 
-from .aggregation import (
-    Ballot,
-    ballots_from_rankings,
-    borda,
-    normalized_borda,
-)
 from .models import (
     GenerationFailure,
     GenerationFailureDict,
@@ -62,7 +56,6 @@ from .ranking import (
 )
 
 __all__ = [
-    "Ballot",
     "DefaultRankingTemplate",
     "GenerationFailure",
     "GenerationFailureDict",
@@ -81,8 +74,6 @@ __all__ = [
     "RankingTemplate",
     "alias_for_index",
     "append_record",
-    "ballots_from_rankings",
-    "borda",
     "build_generation_task",
     "build_generation_tasks",
     "build_ranking_task",
@@ -90,7 +81,6 @@ __all__ = [
     "deanonymize_ranking",
     "generate_all",
     "generate_one",
-    "normalized_borda",
     "rank_all",
     "rank_one",
     "read_generation_failure_file",

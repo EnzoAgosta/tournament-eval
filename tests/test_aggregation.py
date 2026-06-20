@@ -1,4 +1,7 @@
-"""Tests for the aggregation package: the pure Borda math and the ballot adapter."""
+"""Tests for the aggregation package: the pure positional math and the ballot adapter.
+
+The numpy-backed pairwise methods live in :mod:`tests.test_aggregation_pairwise`.
+"""
 
 import subprocess
 import sys
@@ -6,15 +9,26 @@ import sys
 import pytest
 
 from tests.conftest import GenerationResultFactory, RankingResultFactory
-from tournament_eval.aggregation import ballots_from_rankings, borda, normalized_borda
+from tournament_eval.aggregation import ballots_from_rankings, positional
 
 
 def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
-    # The analysis extra must stay optional: importing the package (and the aggregation
-    # root) must not load numpy, even though the numpy-backed methods exist in submodules.
-    # Run in a fresh interpreter because other tests in this process import numpy directly.
+    # The analysis extra must stay optional: importing the package, the aggregation
+    # namespace, and even the pairwise submodule must not load numpy — only *calling*
+    # a pairwise method should.  Run in a fresh interpreter because other tests in this
+    # process import numpy directly.
     result = subprocess.run(
-        [sys.executable, "-c", "import sys, tournament_eval; assert 'numpy' not in sys.modules"],
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "import tournament_eval\n"
+                "import tournament_eval.aggregation\n"
+                "import tournament_eval.aggregation.pairwise\n"
+                "assert 'numpy' not in sys.modules, 'numpy was imported at module load!'\n"
+            ),
+        ],
         capture_output=True,
         text=True,
     )
@@ -23,7 +37,7 @@ def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
 
 def test_borda_scores_a_single_ballot_top_to_bottom() -> None:
     # A ballot of k=3 awards 2, 1, 0 from best to worst.
-    scores = borda([["x", "y", "z"]])
+    scores = positional.borda([["x", "y", "z"]])
 
     assert scores == {"x": 2.0, "y": 1.0, "z": 0.0}
 
@@ -36,31 +50,31 @@ def test_borda_sums_points_across_ballots() -> None:
         ["a", "c", "b"],  # a:2 c:1 b:0
     ]
 
-    scores = borda(ballots)
+    scores = positional.borda(ballots)
 
     assert scores == {"a": 5.0, "b": 3.0, "c": 1.0}
 
 
 def test_borda_of_no_ballots_is_empty() -> None:
-    assert borda([]) == {}
+    assert positional.borda([]) == {}
 
 
 def test_borda_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     # A duplicate within a ballot is malformed (not a tie) and would double-count.
     with pytest.raises(ValueError, match="more than once"):
-        borda([["a", "b", "a"]])
+        positional.borda([["a", "b", "a"]])
 
 
 def test_normalized_borda_rescales_a_single_ballot_to_zero_one() -> None:
     # k=3: raw points 2,1,0 divided by (k-1)=2 -> 1.0, 0.5, 0.0.
-    scores = normalized_borda([["x", "y", "z"]])
+    scores = positional.normalized_borda([["x", "y", "z"]])
 
     assert scores == {"x": 1.0, "y": 0.5, "z": 0.0}
 
 
 def test_normalized_borda_averages_a_contestant_over_its_ballots() -> None:
     # "a" tops one ballot and bottoms the other: mean of 1.0 and 0.0 is 0.5.
-    scores = normalized_borda([["a", "b"], ["b", "a"]])
+    scores = positional.normalized_borda([["a", "b"], ["b", "a"]])
 
     assert scores == {"a": 0.5, "b": 0.5}
 
@@ -74,33 +88,32 @@ def test_normalized_borda_does_not_reward_more_frequent_participation() -> None:
         ["y", "loser_three"],
     ]
 
-    scores = normalized_borda(ballots)
+    scores = positional.normalized_borda(ballots)
 
     assert scores["x"] == 1.0
     assert scores["y"] == 1.0
 
 
-def test_normalized_borda_warns_and_skips_ballots_with_no_comparison() -> None:
-    # A lone-candidate ballot carries no comparative information: "solo" is dropped (with
-    # a warning so it isn't silent), and the size-2 ballot is scored normally.
-    with pytest.warns(UserWarning, match="fewer than two candidates"):
-        scores = normalized_borda([["solo"], ["a", "b"]])
+def test_normalized_borda_silently_skips_ballots_with_no_comparison() -> None:
+    # A lone-candidate ballot carries no comparative information: "solo" is dropped
+    # silently (no warning), and the size-2 ballot is scored normally.
+    scores = positional.normalized_borda([["solo"], ["a", "b"]])
 
     assert scores == {"a": 1.0, "b": 0.0}
 
 
-def test_normalized_borda_fail_fast_raises_on_a_no_comparison_ballot() -> None:
+def test_normalized_borda_strict_raises_on_a_no_comparison_ballot() -> None:
     with pytest.raises(ValueError, match="fewer than two candidates"):
-        normalized_borda([["solo"], ["a", "b"]], fail_fast=True)
+        positional.normalized_borda([["solo"], ["a", "b"]], strict=True)
 
 
 def test_normalized_borda_of_no_ballots_is_empty() -> None:
-    assert normalized_borda([]) == {}
+    assert positional.normalized_borda([]) == {}
 
 
 def test_normalized_borda_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     with pytest.raises(ValueError, match="more than once"):
-        normalized_borda([["a", "b", "a"]])
+        positional.normalized_borda([["a", "b", "a"]])
 
 
 def test_ballots_from_rankings_resolves_aliases_back_to_authors(
@@ -171,6 +184,6 @@ def test_ballots_feed_straight_into_borda_for_a_leaderboard(
         make_ranking_result(ranking=[gen_alpha.id, gen_gamma.id, gen_beta.id]),
     ]
 
-    scores = borda(ballots_from_rankings(rankings, generations))
+    scores = positional.borda(ballots_from_rankings(rankings, generations))
 
     assert scores == {"alpha": 4.0, "beta": 1.0, "gamma": 1.0}

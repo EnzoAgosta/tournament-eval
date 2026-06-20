@@ -45,16 +45,17 @@ from pydantic_ai.providers.ollama import OllamaProvider  # noqa: E402
 
 from tournament_eval import (  # noqa: E402
     DefaultRankingTemplate,
-    ballots_from_rankings,
-    borda,
     build_generation_tasks,
     build_ranking_tasks,
     deanonymize_ranking,
     generate_all,
-    normalized_borda,
     rank_all,
 )
-from tournament_eval.aggregation.copeland import copeland  # noqa: E402
+from tournament_eval.aggregation import (  # noqa: E402
+    ballots_from_rankings,
+    pairwise,
+    positional,
+)
 from tournament_eval.models import GenerationResult, RankingFailure, RankingResult  # noqa: E402
 
 # A real Ollama server is a hard requirement, and the models must be pulled.
@@ -205,15 +206,15 @@ async def test_end_to_end_tournament_against_ollama(tmp_path: Path) -> None:
         assert set(ballot).issubset(set(_MODELS))
         assert len(ballot) == len(ranking.ranking)
 
-    borda_scores = borda(ballots)
+    borda_scores = positional.borda(ballots)
     assert set(borda_scores).issubset(set(_MODELS))
     assert all(isinstance(score, float) for score in borda_scores.values())
 
-    normalized_scores = normalized_borda(ballots)
+    normalized_scores = positional.normalized_borda(ballots)
     assert all(0.0 <= score <= 1.0 for score in normalized_scores.values())
 
     # Copeland over the known universe: every model is scored (pinned by
     # expected_contestants), and net wins-minus-losses sum to zero by construction.
-    copeland_scores = copeland(ballots, expected_contestants=set(_MODELS))
+    copeland_scores = pairwise.copeland(ballots, expected_contestants=set(_MODELS))
     assert set(copeland_scores) == set(_MODELS)
     assert sum(copeland_scores.values()) == pytest.approx(0.0)

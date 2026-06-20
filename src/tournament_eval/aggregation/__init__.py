@@ -12,25 +12,39 @@ default ranking template guarantees.  Every method here assumes this; none model
 tie-groups.  A ballot that ranks the same contestant twice is malformed (not a tie)
 and is rejected.
 
-**Optional heavy dependencies.**  The positional methods (:func:`borda`,
-:func:`normalized_borda`) are pure counting, always available, and re-exported here.
-The pairwise methods need ``numpy`` from the ``analysis`` extra and live in their own
-submodules — import them directly::
+**Two styles, two modules — reach for the one you want:**
 
-    from tournament_eval.aggregation.pairwise import pairwise_matrix
-    from tournament_eval.aggregation.copeland import copeland
+* :mod:`tournament_eval.aggregation.positional` — Borda and its normalized variant.
+  Pure Python, **no ``numpy`` needed**.  Scores depend on *where* each ballot ranks a
+  contestant.
+* :mod:`tournament_eval.aggregation.pairwise` — the head-to-head tally
+  (:func:`~tournament_eval.aggregation.pairwise.matrix`) and the methods built on it
+  (Copeland, with more to come).  Need ``numpy`` (the ``analysis`` extra) **at call
+  time only** — importing the module does not pull it in, so this package and a plain
+  tournament run stay dependency-free until you actually call a pairwise method.
 
-This root re-exports only the dependency-free methods, so importing it (and
-``tournament_eval``) never pulls in numpy; the submodule import path is where you opt
-into the extra.
+The shared bridge from the tournament data model to these methods lives in
+:mod:`tournament_eval.aggregation.ballots`:
+
+    from tournament_eval.aggregation import ballots_from_rankings, positional, pairwise
+
+    ballots = ballots_from_rankings(rankings, generations)
+    positional.borda(ballots)              # raw Borda; assumes full participation
+    positional.normalized_borda(ballots)   # mean per-ballot score in [0, 1]; fair under unequal participation
+    pairwise.copeland(ballots)             # wins - losses; a Condorcet winner tops it
+
+Every method that would otherwise silently gloss over something (a sub-two-candidate
+ballot, an omitted expected contestant) takes a ``strict=False`` flag: flip it to
+``True`` to raise instead.  The package-wide ``strict`` means one thing everywhere —
+"raise on anything that would otherwise be handled silently."
 """
 
+from . import pairwise, positional
 from .ballots import Ballot, ballots_from_rankings
-from .borda import borda, normalized_borda
 
 __all__ = [
     "Ballot",
     "ballots_from_rankings",
-    "borda",
-    "normalized_borda",
+    "pairwise",
+    "positional",
 ]
