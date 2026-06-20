@@ -37,7 +37,7 @@ If one model hallucinates, its noise is diluted by the others. If one model is b
 The framework only cares about ordinal rankings. The models can be GPT, Claude, a local Llama, or the checkpoint you fine-tuned an hour ago. They don't need to agree, and they don't need to know anything about each other.
 
 **Order-invariant aggregation.**
-There's no Elo, no match history, no score that drifts as rankings accumulate. Every ranking is independent. Once you have the set of rankings, aggregating them is order-invariant — Borda count, Condorcet, Bradley–Terry, whatever you choose — and the result doesn't depend on the order you feed the rankings in.
+There's no Elo, no match history, no score that drifts as rankings accumulate. Every ranking is independent. Once you have the set of rankings, aggregating them is order-invariant — Borda, Copeland, whatever you choose — and the result doesn't depend on the order you feed the rankings in.
 
 > **A note on determinism.** Generation itself is *not* reproducible — models are sampled at a temperature, so two runs can differ. The order-invariance is a property of the aggregation math over a fixed set of rankings, not of the model outputs. If you need reproducible generation, pin temperature/seed on your agent's model settings.
 
@@ -130,6 +130,32 @@ bedrock_rank = Agent(
 ```
 
 Everything about the model — temperature, max tokens, system prompt/instructions, thinking/`reasoning_effort`, retries, concurrency — is configured on the agent/model the Pydantic AI way and is outside this library's surface. See the [Pydantic AI docs](https://ai.pydantic.dev) for the full set.
+
+### Local models (Ollama)
+
+A local Ollama server works through the OpenAI-compatible endpoint. Two knobs are worth setting explicitly against small local models: `retries` (structured ranking output is where weak models flub, and a retry often clears it) and `max_concurrency` (Ollama's default `OLLAMA_NUM_PARALLEL` is low, so unbounded fan-out can queue or time out).
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.models.ollama import OllamaModel
+from pydantic_ai.providers.ollama import OllamaProvider
+
+OLLAMA = "http://localhost:11434/v1"
+MODELS = ["qwen2.5:7b", "llama3.1:8b", "mistral:7b"]
+
+template = DefaultRankingTemplate()
+
+gen_agents = [
+    Agent(OllamaModel(m, provider=OllamaProvider(base_url=OLLAMA)), output_type=str, name=m, max_concurrency=2)
+    for m in MODELS
+]
+rank_agents = [
+    Agent(OllamaModel(m, provider=OllamaProvider(base_url=OLLAMA)), output_type=template.response_model, name=m, retries=3, max_concurrency=2)
+    for m in MODELS
+]
+```
+
+`name=m` makes the model name the `author` label (see [Author labels](#author-labels)).
 
 ### Author labels
 
@@ -258,6 +284,8 @@ results, failures = await generate_all(
 )
 pbar.close()
 ```
+
+`total` here is the pre-resume count, so on a rerun the bar overshoots by the number of pairs skipped from `results_path` — cosmetic, since callbacks only fire for pairs actually run this call.
 
 The callbacks are deliberately typed and minimal (one concrete type each, no dict/event protocol, no index/count — the caller already knows the total). `generate_one` / `rank_one` stay callback-free: their caller already receives the outcome synchronously.
 

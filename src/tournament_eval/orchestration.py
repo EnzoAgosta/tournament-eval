@@ -1,50 +1,47 @@
 """Pure-async orchestration for the tournament evaluation flow.
 
-Three stages, each fired concurrently and each returning ``(results, failures)`` so
-one failing agent never sinks a run:
+Three stages, each fired concurrently and each returning ``(results, failures)``
+so one failing agent never sinks a run:
 
 1. :func:`generate_all` - every agent produces an output for every task.
 2. :func:`build_ranking_tasks` - group the outputs per task and assign anonymised
    aliases (A, B, C...) so authorship is hidden from the rankers.
 3. :func:`rank_all` - every agent ranks every task's candidates.
 
-Build your generation tasks first with :func:`build_generation_tasks` (rerun-stable;
-see below) or construct :class:`~tournament_eval.models.GenerationTask` directly,
-then run the three stages.
+Build generation tasks first with :func:`build_generation_tasks` (rerun-stable) or
+construct :class:`~tournament_eval.models.GenerationTask` directly, then run the
+three stages.
 
-The pipeline is a thin wrapper over `pydantic-ai <https://ai.pydantic.dev>`_.
-You construct and own the :class:`pydantic_ai.Agent` instances - configuring their
-model, settings, thinking, retries, and concurrency the pydantic-ai way - and hand
-them in.  ``generate_all`` / ``rank_all`` call ``agent.run`` and map each
+A thin wrapper over `pydantic-ai <https://ai.pydantic.dev>`_: you construct and
+own the :class:`pydantic_ai.Agent` instances - model, settings, thinking, retries,
+concurrency all configured the pydantic-ai way - and hand them in.
+``generate_all`` / ``rank_all`` call ``agent.run`` and map each
 :class:`pydantic_ai.AgentRunResult` onto the tournament data model (output,
-reasoning trace, usage → metadata).  No client lifecycle to manage: ``agent.run``
-is a plain coroutine, so there's no ``async with`` and nothing to open or close.
+reasoning trace, usage → metadata).  No client lifecycle: ``agent.run`` is a plain
+coroutine, so there's no ``async with``.
 
 Generation agents produce ``str``; ranking agents produce the ranking
 :class:`~tournament_eval.ranking.RankingTemplate`'s ``response_model`` (a pydantic
-model).  Contestants and rankers are separate lists, so the two roles use agents
-with different output types — wire a ranking agent with
-``Agent(model, output_type=template.response_model)``.
+model) — wire one with ``Agent(model, output_type=template.response_model)``.
 
 **Resume is automatic.**  When a ``results_path`` is given, :func:`generate_all` /
 :func:`rank_all` read it back first and skip every ``(task, author)`` pair that
 already succeeded, running only what's left and returning the *complete* set
-(loaded plus newly produced).  So a partial run is finished by just running the
-script again - no skip lists to thread through.  Successes are skipped; failures
-are always retried (fix the cause, rerun).  Per call the return is a clean
-partition: ``results`` is every pair with a success, ``failures`` every pair still
-without one.
+(loaded plus newly produced).  A partial run is finished by just running the
+script again.  Successes are skipped; failures are always retried.  The return is
+a clean partition: ``results`` is every pair with a success, ``failures`` every
+pair still without one.
 
 **Author labels are load-bearing.**  Each result's ``author`` is resolved from the
-agent (``agent.name`` if set, else the model name) and - together with the task id
-- is the resume key, so two agents in one run must resolve to distinct authors.
-:func:`generate_all` / :func:`rank_all` check this up front and raise on
-collisions; set distinct ``agent.name`` values (or use distinct models) to disambiguate
-e.g. one model run at two temperatures.
+agent (``agent.name`` if set, else the model name) and, with the task id, is the
+resume key, so two agents in a run must resolve to distinct authors.
+:func:`generate_all` / :func:`rank_all` check this up front and raise on collision;
+set distinct ``agent.name`` values (or use distinct models) to disambiguate e.g.
+one model run at two temperatures.
 
-Aggregation - collapsing the per-ranker rankings into a leaderboard (Borda, Elo,
-...) - is intentionally out of scope; the pipeline hands you validated ranked data
-to score however you like.
+Aggregation - collapsing the per-ranker rankings into a leaderboard - lives in
+:mod:`tournament_eval.aggregation` and is intentionally a convenience, not a
+mandate; the pipeline hands you validated ranked data to score however you like.
 """
 
 import asyncio
@@ -88,10 +85,9 @@ _RankAgent = Agent[None, BaseModel]
 def _resolve_author[DepsT, OutT](agent: Agent[DepsT, OutT]) -> str:
     """Resolve an agent's stable author label: ``agent.name`` if set, else the model name.
 
-    ``agent.name`` is the explicit, stable label - use it when two agents share a
-    model id (e.g. one model at two temperatures) and must stay distinct in the
-    resume key.  Otherwise the model name dedups naturally: distinct models get
-    distinct authors.  Raises if neither is available, since the label is
+    Use ``agent.name`` when two agents share a model id (e.g. one model at two
+    temperatures) and must stay distinct in the resume key; otherwise the model
+    name dedups naturally.  Raises if neither is available — the label is
     load-bearing for resume and de-anonymisation.
     """
     name = agent.name
@@ -135,10 +131,10 @@ def _check_distinct_authors[DepsT, OutT](
 def _check_output_types(agents: Iterable[_RankAgent], template: RankingTemplate) -> None:
     """Raise if any ranking agent's ``output_type`` isn't the template's ``response_model``.
 
-    The template owns the response *shape* and the parser that reads it; an agent
-    wired to a different ``output_type`` would only surface as a per-task
-    :class:`RankingFailure` when :meth:`RankingTemplate.parse` rejects the instance.
-    Checking up front turns that into one loud, immediate error at the call boundary.
+    The template owns the response shape and its parser; an agent wired to a
+    different ``output_type`` would only surface later as a per-task
+    :class:`RankingFailure`.  Checking up front makes it one loud error at the
+    call boundary.
     """
     expected = template.response_model
     mismatched = [_resolve_author(agent) for agent in agents if agent.output_type is not expected]
@@ -154,9 +150,8 @@ def _extract_reasoning(messages: list[ModelMessage]) -> str | None:
 
     pydantic-ai normalises each provider's thinking into :class:`ThinkingPart`
     objects on the model responses; we join their ``content``.  ``None`` when the
-    model produced no thinking parts (or they carried no content - some providers
-    surface raw reasoning only in ``provider_details`` and we don't chase that
-    yet).
+    model produced no thinking parts.  Some providers surface raw reasoning only in
+    ``provider_details``; we don't chase that yet.
     """
     chunks: list[str] = []
     for msg in messages:
@@ -168,12 +163,11 @@ def _extract_reasoning(messages: list[ModelMessage]) -> str | None:
 
 
 def _usage_to_metadata(usage: RunUsage) -> dict[str, object]:
-    """Stamp a run's usage into the result ``metadata`` kitchen-sink dict.
+    """Stamp a run's usage into the result ``metadata`` dict.
 
     Token/request counts come from pydantic-ai's :class:`RunUsage`; cost ($) is a
-    later addition (``RunUsage`` implements ``genai_prices``' ``AbstractUsage``,
-    so it's reachable).  Keys are stable across reruns so persisted records stay
-    readable.
+    later addition (``RunUsage`` implements ``genai_prices``' ``AbstractUsage``).
+    Keys are stable across reruns so persisted records stay readable.
     """
     return {
         "input_tokens": usage.input_tokens,
@@ -187,10 +181,9 @@ def _usage_to_metadata(usage: RunUsage) -> dict[str, object]:
 def _notify[OutT](hook: Callable[[OutT], None] | None, outcome: OutT, *, stage: str) -> None:
     """Invoke a per-outcome progress callback, swallowing a buggy hook's error.
 
-    A progress hook (print, log, tqdm) is the user's concern, not the run's, so a
-    broken hook mustn't sink a batch of model calls: a raised exception is turned
-    into a :class:`UserWarning` and the run continues.  Revisit if a louder policy
-    is wanted.  ``stage`` labels the warning so it's clear which stage's hook broke.
+    A progress hook is the user's concern, not the run's, so a broken one mustn't
+    sink a batch: a raised exception becomes a :class:`UserWarning` and the run
+    continues.  ``stage`` labels the warning so it's clear which stage's hook broke.
     """
     if hook is None:
         return
@@ -212,28 +205,21 @@ def build_generation_task(
 ) -> GenerationTask:
     """Build one GenerationTask from a prompt.
 
-    Mirrors :func:`build_ranking_task` for the generation side: a fresh
-    :class:`uuid.UUID` (or the given ``id``) is stamped on the task and, if
-    ``tasks_path`` is set, the task is appended to that generation-tasks file as
-    soon as it is built.
+    Stamps a fresh :class:`uuid.UUID` (or the given ``id``) and, if ``tasks_path``
+    is set, appends the task to that file as soon as it's built.
 
-    **No resume** — unlike :func:`build_generation_tasks`, this always builds a
-    new task (with a fresh id when ``id`` is unset).  Resume is a batch concern;
-    use :func:`build_generation_tasks` when you want rerun stability.
+    **No resume** — always builds a new task (fresh id when ``id`` is unset).  Use
+    :func:`build_generation_tasks` for rerun stability; a random id here makes
+    :func:`generate_all` resume silently no-op for this task across reruns.
 
     Parameters
     ----------
     prompt : str
         The generation prompt for this task.
     id : uuid.UUID | None
-        Optional explicit id; defaults to a fresh ``uuid4``.  Pass an explicit
-        id only if you want to opt out of the library's id management — note that
-        a random id here makes :func:`generate_all` resume silently no-op for this
-        task across reruns (the id won't match), so prefer
-        :func:`build_generation_tasks` for rerun-stable ids.
+        Optional explicit id; defaults to a fresh ``uuid4``.
     tasks_path : str | Path | None
-        If set, the GenerationTask is appended to this generation-tasks file as
-        soon as it is built (mirrors ``build_ranking_task``).
+        If set, the task is appended to this generation-tasks file as built.
 
     Returns
     -------
@@ -252,32 +238,27 @@ def build_generation_tasks(
 ) -> list[GenerationTask]:
     """Build GenerationTasks from prompts, rerun-stable by matching on prompt.
 
-    Mirrors :func:`build_ranking_tasks` for the generation side.  ``tasks_path`` is
-    **required** — persistence is the whole point: on a rerun the file is read back
-    and any prompt that already has a persisted task reuses it (and its id) as-is;
-    only prompts without one are built (with a fresh ``uuid4``) and appended.
+    ``tasks_path`` is **required** — persistence is the whole point: on a rerun
+    the file is read back and any prompt that already has a persisted task reuses
+    it (and its id); only prompts without one are built (fresh ``uuid4``) and
+    appended.  This is what makes "just rerun the script" actually resume: ids
+    stay stable, so :func:`generate_all`'s ``(task_id, author)`` resume matches and
+    skips already-done pairs.
 
-    This is what makes the naive "just rerun the script" pattern actually resume:
-    ids stay stable across runs because they come from the persisted file, so
-    :func:`generate_all`'s existing ``(task_id, author)`` resume matches and skips
-    already-done pairs instead of silently regenerating everything.
-
-    Tasks are matched to prompts **by their ``generation_prompt``**.  The
-    consequence: duplicate prompts collapse to a single task (and a single
-    GenerationResult per author) — two identical prompts are one task, not two,
-    and you don't want two identical candidates behind two aliases in a ranking.
-    For deliberate distinct duplicates, use :func:`build_generation_task` with an
-    explicit ``id`` (or construct :class:`GenerationTask` directly).
+    Tasks match prompts **by ``generation_prompt``**, so duplicate prompts
+    collapse to one task (and one GenerationResult per author) — two identical
+    prompts are one task, not two, and you don't want two identical candidates
+    behind two aliases in a ranking.  For deliberate distinct duplicates, use
+    :func:`build_generation_task` with an explicit ``id``.
 
     Parameters
     ----------
     prompts : Iterable[str]
         The generation prompts.  Any iterable; materialised once, so an open text
-        file (yielding lines) is fine — strip the trailing newlines yourself if
-        they shouldn't be part of the prompt.
+        file is fine — strip trailing newlines yourself if they shouldn't be part
+        of the prompt.
     tasks_path : str | Path
-        The generation-tasks file: tasks are streamed here as built and read back
-        for per-prompt resume.  Required.
+        The generation-tasks file: streamed here as built, read back for resume.
 
     Returns
     -------
@@ -312,21 +293,16 @@ async def generate_one(
     """Call a single generation agent for a single task.
 
     Returns a :class:`GenerationResult`, or a :class:`GenerationFailure` if the
-    agent raised - a caller looping over :func:`generate_one` directly tells the
-    two apart by type.
+    agent raised — tell them apart by type.  Does **not** resume (always runs);
+    resume is a batch concern, see :func:`generate_all`.
 
-    Concurrency is the agent's concern: if it was given ``max_concurrency`` (or a
-    shared limiter), this call self-throttles.  That means a hand-rolled loop over
-    :func:`generate_one` gets the same bounding as :func:`generate_all` for free.
+    Concurrency is the agent's: if it has ``max_concurrency`` (or a shared
+    limiter), this call self-throttles, so a hand-rolled loop over
+    :func:`generate_one` gets the same bounding as :func:`generate_all`.
 
-    Unlike :func:`generate_all`, this does **not** resume - it always runs.  Resume
-    is a batch concern; see :func:`generate_all`.
-
-    If ``results_path`` / ``failures_path`` is given, the produced
-    :class:`GenerationResult` / :class:`GenerationFailure` is appended to that file
-    as soon as it lands (see :mod:`tournament_eval.persistence`).  Only the
-    ``agent.run`` call is guarded, so a persistence error propagates rather than
-    masquerading as a failure.
+    If ``results_path`` / ``failures_path`` is given, the produced record is
+    appended as soon as it lands.  Only the ``agent.run`` call is guarded, so a
+    persistence error propagates rather than masquerading as a failure.
     """
     result: GenerationResult | GenerationFailure
     try:
@@ -360,12 +336,12 @@ async def _generate_and_notify(
     """Run :func:`generate_one` and fire the matching progress callback as it lands.
 
     The callback fires *after* ``generate_one`` returns, which is *after* the
-    record has been appended to disk (``append_record`` is sync and awaited-free),
-    so a notified outcome is always a persisted one.  A raising hook is swallowed
-    by :func:`_notify` so it can't sink the batch.  This is the per-coroutine seam
-    that makes :func:`generate_all`'s ``asyncio.gather`` observable outcome-by-
-    outcome; it is internal because :func:`generate_one` itself stays
-    callback-free (its caller already gets the value synchronously).
+    record is appended to disk (``append_record`` is sync/await-free), so a
+    notified outcome is always a persisted one.  A raising hook is swallowed by
+    :func:`_notify`.  Internal: :func:`generate_one` stays callback-free (its
+    caller already gets the value synchronously); this wrapper is the per-coroutine
+    seam that makes :func:`generate_all`'s ``asyncio.gather`` observable
+    outcome-by-outcome.
     """
     outcome = await generate_one(task, agent, results_path=results_path, failures_path=failures_path)
     if isinstance(outcome, GenerationResult):
@@ -402,15 +378,15 @@ async def generate_all(
 ) -> tuple[list[GenerationResult], list[GenerationFailure]]:
     """Run every generation agent against every task to produce GenerationResults.
 
-    All calls are fired concurrently with :func:`asyncio.gather`; per-agent
-    bounding is the agent's ``max_concurrency``.  No lifecycle management is
-    needed - ``agent.run`` is a plain coroutine.
+    All calls fire concurrently with :func:`asyncio.gather`; per-agent bounding is
+    the agent's ``max_concurrency``.  No lifecycle — ``agent.run`` is a plain
+    coroutine.
 
     **Resume is automatic** when ``results_path`` is set: the file is read back
     first and every ``(generation_task_id, author)`` pair already recorded there is
-    skipped, so re-running the script finishes an interrupted run.  Records loaded
-    for a task or agent absent from the current run are ignored.  Only *successes*
-    are skipped; a pair that previously failed is retried.
+    skipped, so re-running finishes an interrupted run.  Records for a task or
+    agent absent from the current run are ignored.  Only *successes* are skipped;
+    a pair that previously failed is retried.
 
     Parameters
     ----------
@@ -418,34 +394,33 @@ async def generate_all(
         The creative tasks to evaluate.
     agents : Iterable[Agent[None, str]]
         The generation agents (``output_type=str``).  Any iterable; materialised
-        once, so a single-pass iterator is safe.  Each must resolve to a distinct
-        author (``agent.name`` or model name) - a collision raises.
+        once.  Each must resolve to a distinct author — a collision raises.
     results_path : str | Path | None
         If set, the GenerationResults file: each success is streamed to it as it
-        lands, and on entry it is read back to skip pairs already done (resume).
+        lands, and on entry it's read back to skip pairs already done (resume).
         Persisting the *tasks* is yours (``persistence.append_record``).
     failures_path : str | Path | None
         If set, the GenerationFailures file: each failure is appended as it lands.
-        It is a write-only log - not read for resume - so across reruns it may hold
+        A write-only log — not read for resume — so across reruns it may hold
         several entries for a pair that kept failing.
     on_result : Callable[[GenerationResult], None] | None
         Optional sync callback fired with each :class:`GenerationResult` as it
-        lands, *after* it has been persisted to ``results_path`` (so "notified"
-        means "safely on disk").  Use it for progress reporting (print, tqdm).
-        Not fired for successes loaded from ``results_path`` on resume (those
-        were never run this call).  A raising hook is swallowed into a
-        :class:`UserWarning` so a broken progress callback can't sink the batch.
+        lands, *after* it's persisted to ``results_path`` (so "notified" means
+        "safely on disk").  Use it for progress reporting (print, tqdm).  Not fired
+        for successes loaded from ``results_path`` on resume.  A raising hook is
+        swallowed into a :class:`UserWarning` so a broken callback can't sink the
+        batch.
     on_failure : Callable[[GenerationFailure], None] | None
         Optional sync callback fired with each :class:`GenerationFailure` as it
-        lands (after it's been appended to ``failures_path``).  Same semantics as
+        lands (after it's appended to ``failures_path``).  Same semantics as
         ``on_result`` for resume and error-swalling.
 
     Returns
     -------
     tuple[list[GenerationResult], list[GenerationFailure]]
         A partition of every (task, agent) pair: ``results`` is every pair that
-        now has a success (loaded from ``results_path`` plus produced this call),
-        and ``failures`` is every pair still without one.
+        now has a success (loaded plus produced this call), ``failures`` every
+        pair still without one.
     """
     agents_list = list(agents)
     _check_distinct_authors(agents_list)
@@ -492,9 +467,9 @@ def build_ranking_task(
     """Build one RankingTask from a single task's GenerationResults.
 
     The ``results`` are shuffled before aliases (A, B, C...) are assigned, so a
-    model's position bias (e.g. always picking "A") doesn't track authorship.  The
-    originating task is taken from ``results[0].generation_task_id`` (all results must be for
-    the same task) and recorded as the RankingTask's ``generation_task_id``.
+    ranker's position bias (e.g. always picking "A") doesn't track authorship.
+    The originating task is taken from ``results[0].generation_task_id`` (all
+    results must be for the same task).
 
     Parameters
     ----------
@@ -503,8 +478,7 @@ def build_ranking_task(
     ranking_prompt : str
         The ranking instructions to embed in the RankingTask.
     tasks_path : str | Path | None
-        If set, the RankingTask is appended to this ranking-tasks file as soon as
-        it is built (mirrors ``generate_one``).
+        If set, the RankingTask is appended to this file as soon as it's built.
     random_seed : int | None
         Seed for the alias shuffle; ``None`` for nondeterministic.
 
@@ -545,21 +519,21 @@ def build_ranking_tasks(
 ) -> list[RankingTask]:
     """Group GenerationResults by task and create RankingTasks with aliases.
 
-    A thin fan-out over :func:`build_ranking_task` - one RankingTask per task that
+    A thin fan-out over :func:`build_ranking_task` — one RankingTask per task that
     produced at least one output.
 
-    **Resume is per-task** when ``tasks_path`` is set: the file is read back and any
-    task that already has a persisted RankingTask reuses it as-is; only tasks
-    without one are (re)built and appended.  This is deliberately *frozen* - a
-    task's RankingTask, once built, is never rebuilt, because rebuilding would
+    **Resume is per-task** when ``tasks_path`` is set: the file is read back and
+    any task that already has a persisted RankingTask reuses it as-is; only tasks
+    without one are (re)built and appended.  This is deliberately *frozen* — a
+    task's RankingTask, once built, is never rebuilt, since rebuilding would
     re-shuffle the aliases and orphan every ranking already collected against it.
 
     The consequence: a generation that lands *after* its task's RankingTask was
     built (e.g. a flaky model that only succeeded on a later resume) will **not**
     be added to that task's candidate set.  So build ranking tasks only once
-    generation is fully done - run :func:`generate_all` until its ``failures`` are
-    empty before calling this.  To deliberately rebuild, delete the ranking-tasks
-    file (and any rankings already collected) first.
+    generation is fully done — run :func:`generate_all` until its ``failures`` are
+    empty first.  To deliberately rebuild, delete the ranking-tasks file (and any
+    rankings already collected) first.
 
     Parameters
     ----------
@@ -571,15 +545,15 @@ def build_ranking_tasks(
         The ranking instructions to embed in every RankingTask.
     tasks_path : str | Path | None
         If set, RankingTasks are streamed here as built and read back for per-task
-        resume (see above).
+        resume.
     random_seed : int | None
         Seed for the per-task alias shuffle; ``None`` for nondeterministic.
 
     Returns
     -------
     list[RankingTask]
-        One RankingTask per task that has at least one GenerationResult.
-        Each RankingTask maps aliases (A, B, C...) to GenerationResult IDs.
+        One RankingTask per task that has at least one GenerationResult, each
+        mapping aliases (A, B, C...) to GenerationResult IDs.
     """
     results_by_task: dict[uuid.UUID, list[GenerationResult]] = {}
     for result in generation_results:
@@ -614,20 +588,19 @@ async def rank_one(
 ) -> RankingResult | RankingFailure:
     """Call a single ranking agent for a single RankingTask.
 
-    Returns a :class:`RankingResult`, or a :class:`RankingFailure` if the ranking
-    agent raised or returned a malformed ranking (failed pydantic validation, or
-    failed the dynamic alias check).
+    Returns a :class:`RankingResult`, or a :class:`RankingFailure` if the agent
+    raised or returned a malformed ranking (failed pydantic validation, or failed
+    the dynamic alias check).
 
-    The ``template`` (a :class:`RankingTemplate`, default
-    :class:`~tournament_eval.ranking.DefaultRankingTemplate`) owns the prompt, the
-    response model (the agent's ``output_type``), and the dynamic alias
-    validation.  The agent's ``output_type`` must match ``template.response_model``.
+    The ``template`` (default :class:`~tournament_eval.ranking.DefaultRankingTemplate`)
+    owns the prompt, the response model (the agent's ``output_type``), and the
+    alias validation; the agent's ``output_type`` must match
+    ``template.response_model``.
 
-    As with :func:`generate_one`, concurrency is bounded by the agent itself, there
-    is no resume - it always runs - and if ``results_path`` / ``failures_path`` is
-    given, the produced record is appended as soon as it lands.  Only the ranking
-    call is guarded, so a persistence error propagates rather than masquerading as
-    a failure.
+    As with :func:`generate_one`: concurrency is bounded by the agent, there is no
+    resume (always runs), and if ``results_path`` / ``failures_path`` is given the
+    record is appended as it lands.  Only the ranking call is guarded, so a
+    persistence error propagates rather than masquerading as a failure.
     """
     template = template or _DEFAULT_TEMPLATE
     candidates = {alias: generation_lookup[gen_id] for alias, gen_id in ranking_task.generations.items()}
@@ -683,9 +656,9 @@ async def _rank_and_notify(
     """Run :func:`rank_one` and fire the matching progress callback as it lands.
 
     Mirrors :func:`_generate_and_notify` for the ranking stage: the callback fires
-    *after* :func:`rank_one` returns (and so after the record is persisted), and a
-    raising hook is swallowed by :func:`_notify`.  Internal for the same reason -
-    :func:`rank_one` stays callback-free.
+    *after* :func:`rank_one` returns (so after the record is persisted), and a
+    raising hook is swallowed by :func:`_notify`.  Internal — :func:`rank_one`
+    stays callback-free.
     """
     outcome = await rank_one(
         ranking_task,
@@ -715,56 +688,54 @@ async def rank_all(
 ) -> tuple[list[RankingResult], list[RankingFailure]]:
     """Run every ranking agent against every RankingTask.
 
-    For each RankingTask, the full ranking prompt is built by ``template`` (a
-    :class:`RankingTemplate`, default
-    :class:`~tournament_eval.ranking.DefaultRankingTemplate`) from the
-    ``ranking_prompt`` and the candidates.  Each agent receives the assembled
-    prompt and returns a structured ranking (its ``output_type`` must match
-    ``template.response_model``).  No lifecycle management - ``agent.run`` is a
-    plain coroutine.
+    For each RankingTask, ``template`` (default
+    :class:`~tournament_eval.ranking.DefaultRankingTemplate`) builds the full
+    prompt from ``ranking_prompt`` and the candidates.  Each agent receives it and
+    returns a structured ranking (its ``output_type`` must match
+    ``template.response_model``).  No lifecycle — ``agent.run`` is a plain
+    coroutine.
 
-    **Resume is automatic** when ``results_path`` is set, exactly as in
-    :func:`generate_all` but keyed on ``(ranking_task_id, author)``: already-recorded
-    successes are skipped and returned alongside what's produced this call.  Records
-    loaded for a ranking task or agent absent from the current run are ignored.
+    **Resume is automatic** when ``results_path`` is set, as in :func:`generate_all`
+    but keyed on ``(ranking_task_id, author)``: already-recorded successes are
+    skipped and returned alongside what's produced this call.  Records for a
+    ranking task or agent absent from the current run are ignored.
 
     Parameters
     ----------
     ranking_tasks : list[RankingTask]
         The scenarios to be ranked.
     generation_results : list[GenerationResult]
-        The outputs to be ranked (looked up by the aliases in each
-        RankingTask).
+        The outputs to be ranked (looked up by the aliases in each RankingTask).
     agents : Iterable[Agent[None, BaseModel]]
         The ranking agents (``output_type=template.response_model``).  Any
         iterable; materialised once.  Each must resolve to a distinct author.
     template : RankingTemplate | None
         The ranking contract (prompt, response model, validation).  ``None`` uses
-        :class:`~tournament_eval.ranking.DefaultRankingTemplate` - a strict total
+        :class:`~tournament_eval.ranking.DefaultRankingTemplate` — a strict total
         order with no ties.
     results_path : str | Path | None
         If set, the RankingResults file: each success is streamed to it as it
-        lands, and on entry it is read back to skip pairs already done (resume).
-        The ranking *tasks* are persisted separately when built
+        lands, and on entry it's read back to skip pairs already done (resume).
+        The ranking *tasks* are persisted separately
         (``build_ranking_tasks(..., tasks_path=...)``).
     failures_path : str | Path | None
         If set, the RankingFailures file: each failure is appended as it lands.
         A write-only log (not read for resume).
     on_result : Callable[[RankingResult], None] | None
         Optional sync callback fired with each :class:`RankingResult` as it lands,
-        *after* it has been persisted to ``results_path``.  Same semantics as
+        *after* it's persisted to ``results_path``.  Same semantics as
         :func:`generate_all`'s ``on_result``: not fired for resume-loaded
-        successes, and a raising hook is swallowed into a :class:`UserWarning`.
+        successes, a raising hook swallowed into a :class:`UserWarning`.
     on_failure : Callable[[RankingFailure], None] | None
-        Optional sync callback fired with each :class:`RankingFailure` as it
-        lands (after it's been appended to ``failures_path``); see ``on_result``.
+        Optional sync callback fired with each :class:`RankingFailure` as it lands
+        (after it's appended to ``failures_path``); see ``on_result``.
 
     Returns
     -------
     tuple[list[RankingResult], list[RankingFailure]]
         A partition of every (ranking_task, agent) pair: ``results`` is every pair
-        that now has a success (loaded from ``results_path`` plus produced this
-        call), and ``failures`` every pair still without one.
+        that now has a success (loaded plus produced this call), ``failures``
+        every pair still without one.
     """
     template = template or _DEFAULT_TEMPLATE
     agents_list = list(agents)
@@ -813,15 +784,13 @@ def deanonymize_ranking(
     """Resolve a :class:`RankingResult`'s alias-space ranking into author names.
 
     Maps ``ranking_result.ranking`` (a list of :class:`GenerationResult` ids, best
-    first) to the ``author`` of each, using ``generations`` as the lookup.  This is
-    the de-anonymization step for analysis - the line right before aggregation
-    begins - and the inverse of the aliasing :func:`build_ranking_task` did at
-    ranking-task build time.
+    first) to each one's ``author`` via ``generations``.  This is the
+    de-anonymization step before aggregation, and the inverse of the aliasing
+    :func:`build_ranking_task` did at ranking-task build time.
 
-    A pure function: no state, no I/O, no mutation.  Raises :class:`KeyError` if a
-    ranked id isn't among ``generations`` (a ranking should only reference ids from
-    its own task's candidate set, so that's a data-integrity error worth surfacing
-    loudly rather than silently dropping).
+    Pure: no state, no I/O, no mutation.  Raises :class:`KeyError` if a ranked id
+    isn't among ``generations`` — a ranking should only reference ids from its own
+    task's candidate set, so that's a data-integrity error worth surfacing loudly.
 
     Parameters
     ----------
@@ -829,13 +798,13 @@ def deanonymize_ranking(
         The ranking to de-anonymize.
     generations : Iterable[GenerationResult]
         The generation outputs (e.g. what :func:`generate_all` returned, or what
-        ``read_generation_result_file`` loaded back).  Used to map each ranked id
-        to its ``author``.
+        ``read_generation_result_file`` loaded back).
 
     Returns
     -------
     list[str]
-        Authors in ranked order, best first - e.g. ``["gpt-4o", "claude-sonnet-4-6", ...]``.
+        Authors in ranked order, best first — e.g.
+        ``["gpt-4o", "claude-sonnet-4-6", ...]``.
     """
     author_by_id = {generation.id: generation.author for generation in generations}
     return [author_by_id[generation_id] for generation_id in ranking_result.ranking]

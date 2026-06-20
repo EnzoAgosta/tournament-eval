@@ -1,15 +1,15 @@
 """The pairwise tally: how often each contestant is ranked above each other one.
 
-Most non-positional aggregation methods — Copeland, minimax, Schulze, Bradley-Terry —
-are functions of one shared object: the head-to-head matrix counting, for every ordered
+Most non-positional aggregation methods — Copeland, minimax, Schulze, … — are
+functions of one shared object: the head-to-head matrix counting, for every ordered
 pair ``(i, j)``, how many ballots rank contestant ``i`` above contestant ``j``.  This
 module builds that matrix once so those methods don't each re-derive it.
 
-It is the first piece of the package to need ``numpy`` (the ``analysis`` extra): the
-counting loop is plain Python (low-risk bookkeeping), but the matrix is a
-:class:`numpy.ndarray` so downstream methods can express their logic as reviewable array
-operations rather than hand-rolled loops — leaning on numpy where getting it right by
-hand is easy to get subtly wrong.
+The first piece of the package to need ``numpy`` (the ``analysis`` extra): the
+counting loop is plain Python, but the matrix is a :class:`numpy.ndarray` so
+downstream methods express their logic as reviewable array operations rather than
+hand-rolled loops — leaning on numpy where getting it right by hand is easy to get
+subtly wrong.
 """
 
 import dataclasses
@@ -52,9 +52,9 @@ def pairwise_matrix(
     ballot omits is simply **not compared** in that ballot — it takes part in no matchups
     there, so its counts with contestants it never meets stay zero on both sides (absence
     is not a loss).  Pass ``expected_contestants`` to declare the universe explicitly: the
-    matrix then spans exactly that set (so an omitted contestant still gets a zero
-    row/column rather than vanishing), letting you honestly account for who *could* have
-    been ranked.
+    matrix then spans exactly that set (an omitted contestant still gets a zero
+    row/column rather than vanishing), letting you account for who *could* have been
+    ranked.
 
     Parameters
     ----------

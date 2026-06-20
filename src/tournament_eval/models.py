@@ -1,9 +1,9 @@
 """The pipeline's data model: the tasks, results, and failures it passes around.
 
-Plain frozen dataclasses with no behaviour beyond ``from_json`` — the inverse of the
-orjson serialization in :mod:`tournament_eval.persistence`.  Each is paired with a
-``*Dict`` TypedDict describing its on-disk JSON shape.  The ranking *strategy* lives
-in :mod:`tournament_eval.ranking`; this module is data only.
+Plain frozen dataclasses with no behaviour beyond ``from_json`` — the inverse of
+the JSONL serialization in :mod:`tournament_eval.persistence`.  Each is paired
+with a ``*Dict`` TypedDict describing its on-disk JSON shape.  The ranking
+*strategy* lives in :mod:`tournament_eval.ranking`; this module is data only.
 """
 
 import dataclasses
@@ -47,7 +47,7 @@ class GenerationFailureDict(TypedDict):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class GenerationFailure:
-    """A single model's failure to generate a :class:`GenerationResult`."""
+    """A single model's failure to produce a :class:`GenerationResult`."""
 
     generation_task_id: uuid.UUID
     """The :class:`GenerationTask` this failure is for."""
@@ -96,10 +96,9 @@ class GenerationResult:
     author: str
     """The model identifier that produced this output (e.g. ``"gpt-4o"``)."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
-    """Usage/cost data from the agent run (token counts, request count, ...).
-    Populated by the orchestration from pydantic-ai's ``RunUsage``; a kitchen-sink
-    dict so it can grow (cost via ``genai-prices``, latency, ...) without changing
-    the record shape."""
+    """Usage/cost data from the agent run (token counts, requests), populated by
+    the orchestration from pydantic-ai's ``RunUsage``.  A kitchen-sink dict so it
+    can grow (cost via ``genai-prices``, latency, ...) without changing the record shape."""
 
     @classmethod
     def from_json(cls, data: GenerationResultDict) -> GenerationResult:
@@ -133,9 +132,8 @@ class RankingTask:
     id: uuid.UUID
     """Unique identifier for this ranking task."""
     generation_task_id: uuid.UUID
-    """The :class:`GenerationTask` whose outputs this ranks.  Records provenance
-    (so a ranking traces straight back to its source task) and is the key used to
-    reuse a persisted ranking task on resume instead of rebuilding it."""
+    """The :class:`GenerationTask` whose outputs this ranks.  Provenance key, and the
+    resume key for reusing a persisted ranking task instead of rebuilding it."""
     ranking_prompt: str
     """The ranking instructions to be used when ranking the candidates."""
     generations: dict[str, uuid.UUID]
@@ -164,14 +162,14 @@ class RankingFailureDict(TypedDict):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RankingFailure:
-    """A single model's failure to rank a :class:`RankingResult`."""
+    """A single model's failure to rank a :class:`RankingTask`'s candidates."""
 
     ranking_task_id: uuid.UUID
     """The :class:`RankingTask` this failure is for."""
     generation_task_id: uuid.UUID
-    """The :class:`GenerationTask` whose outputs were being ranked.  Records
-    provenance so a failure traces back to its source task without a join through
-    the :class:`RankingTask`."""
+    """The :class:`GenerationTask` whose outputs were being ranked.  Provenance, so a
+    failure traces back to its source task without a join through the
+    :class:`RankingTask`."""
     author: str
     """The model identifier that failed to rank this result."""
     error_type: str
@@ -179,10 +177,9 @@ class RankingFailure:
     message: str
     """The error message."""
     ranking_prompt: str
-    """The exact ranking prompt sent to the model, verbatim.  Carries the rendered
-    template output (candidates, rubric, ...), so a failure is debuggable without
-    rebuilding the :class:`RankingTask` and its candidates — useful for auditing
-    template/anonymization issues."""
+    """The exact ranking prompt sent to the model, verbatim (the rendered template,
+    candidates and all), so a failure is debuggable without rebuilding the
+    :class:`RankingTask`."""
 
     @classmethod
     def from_json(cls, data: RankingFailureDict) -> RankingFailure:
@@ -220,9 +217,9 @@ class RankingResult:
     ranking_task_id: uuid.UUID
     """The :class:`RankingTask` that was used to produce this ranking."""
     generation_task_id: uuid.UUID
-    """The :class:`GenerationTask` whose outputs were ranked.  Records provenance
-    so a ranking traces straight back to its source task without a join through
-    the :class:`RankingTask`."""
+    """The :class:`GenerationTask` whose outputs were ranked.  Provenance, so a
+    ranking traces back to its source task without a join through the
+    :class:`RankingTask`."""
     ranking_prompt: str
     """The exact ranking prompt sent to the model, verbatim."""
     author: str
@@ -236,22 +233,19 @@ class RankingResult:
     in the :class:`RankingTask`."""
     ranking_reasoning: str | None
     """The ranking justification the model wrote in its structured response's
-    ``reasoning`` field, if any.  This is *output*, not the model's thinking
-    trace — see :attr:`reasoning` for that."""
+    ``reasoning`` field, if any.  This is *output*, not the thinking trace — see
+    :attr:`reasoning` for that."""
     reasoning: str | None
     """The model's reasoning/thinking trace from the ranking run, if the provider
     surfaced one (mirrors :attr:`GenerationResult.reasoning`).  ``None`` when the
     model produced no thinking parts."""
     raw_response: str
-    """The model's structured ranking output, serialized to JSON.  pydantic-ai
-    validated and parsed the provider's reply into the template's ``response_model``;
-    this is *that* validated object re-serialized (``model_dump_json``), not the raw
-    provider wire bytes."""
+    """The validated structured output, re-serialized to JSON
+    (``model_dump_json``) — not the raw provider wire bytes."""
     metadata: dict[str, object] = dataclasses.field(default_factory=dict)
-    """Usage/cost data from the agent run (token counts, request count, ...).
-    Populated by the orchestration from pydantic-ai's ``RunUsage``; a kitchen-sink
-    dict so it can grow (cost via ``genai-prices``, latency, ...) without changing
-    the record shape."""
+    """Usage/cost data from the agent run (token counts, requests), populated by
+    the orchestration from pydantic-ai's ``RunUsage``.  A kitchen-sink dict so it
+    can grow (cost via ``genai-prices``, latency, ...) without changing the record shape."""
 
     @classmethod
     def from_json(cls, data: RankingResultDict) -> RankingResult:

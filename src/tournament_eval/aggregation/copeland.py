@@ -2,20 +2,18 @@
 
 A contestant *beats* another when more ballots rank it above the other than below — a
 head-to-head majority.  Its Copeland score is the number of contestants it beats minus
-the number that beat it, summed over all opponents.  Higher is better; the top scorer is
-the Condorcet winner whenever one exists (someone who beats every other contestant).
+the number that beat it.  Higher is better; the top scorer is the Condorcet winner
+whenever one exists (someone who beats every other contestant).
 
 Unlike Borda, this looks at *who beat whom* rather than average position, so it's robust
 to the size of the field and to lopsided ballots.  It reads straight off the
 :class:`~tournament_eval.aggregation.pairwise.PairwiseTally`, and the scoring is a couple
-of numpy array operations rather than hand-rolled loops — the comparison and tally are
-where a by-hand implementation is easy to get subtly wrong, so we let numpy do it.
+of numpy array operations rather than hand-rolled loops.
 
 **Pairwise ties are allowed in the aggregate.**  The no-ties invariant is about
 individual *ballots*; two contestants can still split the rankers evenly head-to-head
-(equal counts above and below).  Such a matchup is a draw — it counts as neither a win
-nor a loss for either side (standard Copeland; the ``+0.5`` fractional-win convention is
-not used here).
+(equal counts above and below).  Such a matchup is a draw — neither a win nor a loss for
+either side (standard Copeland; the ``+0.5`` fractional-win convention is not used here).
 """
 
 from collections.abc import Iterable

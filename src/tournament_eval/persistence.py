@@ -10,29 +10,27 @@ per stream::
     rankings.jsonl             # RankingResults
     ranking_failures.jsonl     # RankingFailures
 
-There is no directory layout or filename convention here: nothing is sharded by
-author, because each record already carries its ``author`` and
-``generation_task_id``/``ranking_task_id``, so a flat
-file is fully reconstructable — group or filter on read.  Where the pipeline
-writes is whatever path you pass to ``generate_all`` / ``rank_all`` /
-``build_ranking_tasks``.
+No directory layout or filename convention: nothing is sharded by author, since
+each record carries its own ``author`` and ``generation_task_id``/
+``ranking_task_id``, so a flat file is fully reconstructable — group or filter on
+read.  Where the pipeline writes is whatever path you pass to ``generate_all`` /
+``rank_all`` / ``build_ranking_tasks``.
 
 Writing is type-agnostic: :func:`json.dumps` (with a ``default`` that renders
 :class:`uuid.UUID` and dataclasses) serialises every record type.  Reading is
 per-type (it rebuilds the dataclass: ``str`` → ``UUID``, dict → dataclass), so
-each stream has its own reader.
-
-These readers are also what powers resume: :func:`~tournament_eval.orchestration.generate_all`
-/ :func:`~tournament_eval.orchestration.rank_all` read their results file back to
+each stream has its own reader — and those readers power resume:
+:func:`~tournament_eval.orchestration.generate_all` /
+:func:`~tournament_eval.orchestration.rank_all` read their results file back to
 skip the ``(task, author)`` pairs already done.
 
 This module depends only on :mod:`tournament_eval.models` — the pipeline calls
 *into* it, never the other way around.
 
-A note on safety: :func:`append_record` does one synchronous ``open → write →
-close`` with no ``await`` in between.  Under a single asyncio event loop that
-makes each line atomic with respect to other in-flight calls — do not "optimise"
-the write into a threaded or async one, or concurrent appends could interleave.
+Safety: :func:`append_record` does one synchronous ``open → write → close`` with
+no ``await`` in between, so under a single asyncio event loop each line is atomic
+with respect to other in-flight calls.  Do not "optimise" the write into a
+threaded or async one, or concurrent appends could interleave.
 """
 
 import dataclasses

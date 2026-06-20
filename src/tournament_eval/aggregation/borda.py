@@ -4,16 +4,15 @@ Each ballot is a strict ranking of *k* contestants, best-first.  A ballot awards
 ``k - 1`` points to its top contestant, ``k - 2`` to the next, down to ``0`` for the
 last.
 
-* :func:`borda` sums those raw points across every ballot; higher is better.  It only
-  compares fairly under **full participation** (every contestant in every ballot).
+* :func:`borda` sums those raw points across every ballot; higher is better.  Compares
+  fairly only under **full participation** (every contestant in every ballot).
 * :func:`normalized_borda` rescales each ballot's points to ``[0, 1]`` and averages a
   contestant over only the ballots it *appears in*, so **unequal participation** — a
   contestant absent from some ballots because, say, its generation failed for that task
   — no longer penalizes it for not competing rather than for losing.
 
-**No ties.**  Like everything in :mod:`tournament_eval.aggregation`, both functions
-assume every ballot is a strict total order.  A contestant appearing twice in one ballot
-is malformed (not a tie) and raises :class:`ValueError`.
+**No ties.**  Both functions assume every ballot is a strict total order.  A contestant
+appearing twice in one ballot is malformed (not a tie) and raises :class:`ValueError`.
 """
 
 import warnings
@@ -49,7 +48,7 @@ def borda(ballots: Iterable[Ballot]) -> dict[str, float]:
     Notes
     -----
     Assumes **full participation**: the raw sum rewards a contestant for appearing in
-    more ballots, so it only compares fairly when every contestant is in every ballot.
+    more ballots, so it compares fairly only when every contestant is in every ballot.
     For unequal participation, use :func:`normalized_borda`.
     """
     scores: dict[str, float] = {}
@@ -108,8 +107,8 @@ def normalized_borda(ballots: Iterable[Ballot], *, fail_fast: bool = False) -> d
     -----
     Normalization fixes *participation* bias, not *opponent-strength* bias: a contestant
     that only ever faced weak fields can still score highly.  Accounting for who beat
-    whom (strength of schedule) is the domain of pairwise methods (Bradley-Terry, Elo),
-    not Borda.
+    whom (strength of schedule) is the domain of pairwise methods (e.g.
+    :func:`~tournament_eval.aggregation.copeland.copeland`), not Borda.
     """
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
