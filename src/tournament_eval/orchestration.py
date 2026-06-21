@@ -24,20 +24,12 @@ Generation agents produce ``str``; ranking agents produce the ranking
 :class:`~tournament_eval.ranking.RankingTemplate`'s ``response_model`` (a pydantic
 model) — wire one with ``Agent(model, output_type=template.response_model)``.
 
-**Resume is automatic.**  When a ``results_path`` is given, :func:`generate_all` /
-:func:`rank_all` read it back first and skip every ``(task, author)`` pair that
-already succeeded, running only what's left and returning the *complete* set
-(loaded plus newly produced).  A partial run is finished by just running the
-script again.  Successes are skipped; failures are always retried.  The return is
-a clean partition: ``results`` is every pair with a success, ``failures`` every
-pair still without one.
+**Resume is automatic** when a ``results_path`` is given — see :func:`generate_all`
+and :func:`rank_all` for the per-stage keys and semantics.
 
-**Author labels are load-bearing.**  Each result's ``author`` is resolved from the
-agent (``agent.name`` if set, else the model name) and, with the task id, is the
-resume key, so two agents in a run must resolve to distinct authors.
-:func:`generate_all` / :func:`rank_all` check this up front and raise on collision;
-set distinct ``agent.name`` values (or use distinct models) to disambiguate e.g.
-one model run at two temperatures.
+**Author labels are load-bearing** — each result's ``author`` (``agent.name`` or
+the model name) is the resume key, so two agents in a run must resolve to distinct
+authors; :func:`generate_all` / :func:`rank_all` check this up front and raise.
 
 Aggregation - collapsing the per-ranker rankings into a leaderboard - lives in
 :mod:`tournament_eval.aggregation` and is intentionally a convenience, not a
@@ -442,14 +434,13 @@ async def generate_all(
     """Run every generation agent against every task to produce GenerationResults.
 
     All calls fire concurrently with :func:`asyncio.gather`; per-agent bounding is
-    the agent's ``max_concurrency``.  No lifecycle — ``agent.run`` is a plain
-    coroutine.
+    the agent's ``max_concurrency``.
 
-    **Resume is automatic** when ``results_path`` is set: the file is read back
-    first and every ``(generation_task_id, author)`` pair already recorded there is
-    skipped, so re-running finishes an interrupted run.  Records for a task or
-    agent absent from the current run are ignored.  Only *successes* are skipped;
-    a pair that previously failed is retried.
+    **Resume** (when ``results_path`` is set) is keyed on
+    ``(generation_task_id, author)``: already-recorded successes are skipped, so
+    re-running finishes an interrupted run.  Records for a task or agent absent
+    from the current run are ignored.  Only *successes* are skipped; a pair that
+    previously failed is retried.
 
     Parameters
     ----------
@@ -761,13 +752,11 @@ async def rank_all(
     :class:`~tournament_eval.ranking.DefaultRankingTemplate`) builds the full
     prompt from ``ranking_prompt`` and the candidates.  Each agent receives it and
     returns a structured ranking (its ``output_type`` must match
-    ``template.response_model``).  No lifecycle — ``agent.run`` is a plain
-    coroutine.
+    ``template.response_model``).
 
-    **Resume is automatic** when ``results_path`` is set, as in :func:`generate_all`
-    but keyed on ``(ranking_task_id, author)``: already-recorded successes are
-    skipped and returned alongside what's produced this call.  Records for a
-    ranking task or agent absent from the current run are ignored.
+    **Resume** (when ``results_path`` is set) is as in :func:`generate_all` but
+    keyed on ``(ranking_task_id, author)``: already-recorded successes are skipped
+    and returned alongside what's produced this call.
 
     Parameters
     ----------
@@ -793,8 +782,7 @@ async def rank_all(
     on_result : Callable[[RankingResult], None] | None
         Optional sync callback fired with each :class:`RankingResult` as it lands,
         *after* it's persisted to ``results_path``.  Same semantics as
-        :func:`generate_all`'s ``on_result``: not fired for resume-loaded
-        successes, a raising hook swallowed into a :class:`UserWarning`.
+        :func:`generate_all`'s ``on_result``.
     on_failure : Callable[[RankingFailure], None] | None
         Optional sync callback fired with each :class:`RankingFailure` as it lands
         (after it's appended to ``failures_path``); see ``on_result``.
