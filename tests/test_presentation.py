@@ -13,6 +13,7 @@ import sys
 import numpy as np
 
 from tournament_eval.aggregation import pairwise
+from tournament_eval.aggregation.ballots import Ballot
 from tournament_eval.presentation import console
 
 
@@ -78,7 +79,7 @@ def test_pairwise_matrix_renders_grid_with_diagonal_dash() -> None:
     #   a over b: 1   a over c: 2
     #   b over a: 1   b over c: 2
     #   c over a: 0   c over b: 0
-    tally = pairwise.matrix([["a", "b", "c"], ["b", "a", "c"]])
+    tally = pairwise.matrix([Ballot(["a", "b", "c"]), Ballot(["b", "a", "c"])])
     out = console.pairwise_matrix(tally)
     lines = out.splitlines()
 
@@ -90,7 +91,7 @@ def test_pairwise_matrix_renders_grid_with_diagonal_dash() -> None:
 
 
 def test_pairwise_matrix_sizes_columns_to_long_labels() -> None:
-    tally = pairwise.matrix([["long-name", "x"]])
+    tally = pairwise.matrix([Ballot(["long-name", "x"])])
     out = console.pairwise_matrix(tally)
     lines = out.splitlines()
 
@@ -111,7 +112,7 @@ def test_ballot_summary_reports_appearances_and_mean_position() -> None:
     # a: positions 1, 2, 1 -> mean (1+2+1)/3 = 1.33
     # b: positions 2, 1, 3 -> mean 2.00
     # c: positions 3, 3, 2 -> mean 2.67
-    out = console.ballot_summary([["a", "b", "c"], ["b", "a", "c"], ["a", "c", "b"]])
+    out = console.ballot_summary([Ballot(["a", "b", "c"]), Ballot(["b", "a", "c"]), Ballot(["a", "c", "b"])])
     lines = out.splitlines()
 
     assert lines[0] == "3 ballots, field size 3 (all equal)"
@@ -129,7 +130,7 @@ def test_ballot_summary_reports_appearances_and_mean_position() -> None:
 
 
 def test_ballot_summary_reports_size_spread_when_unequal() -> None:
-    out = console.ballot_summary([["a", "b", "c"], ["a", "b"]])
+    out = console.ballot_summary([Ballot(["a", "b", "c"]), Ballot(["a", "b"])])
     header = out.splitlines()[0]
 
     assert header == "2 ballots, field size min 2, median 2.5, max 3"
@@ -138,7 +139,7 @@ def test_ballot_summary_reports_size_spread_when_unequal() -> None:
 def test_ballot_summary_sorts_by_appearances_then_position() -> None:
     # d appears once (1 ballot) at position 1; a appears in both ballots.
     # Order: a (2 appearances) before d (1), regardless of d's top placement.
-    out = console.ballot_summary([["a", "b"], ["a", "d"]])
+    out = console.ballot_summary([Ballot(["a", "b"]), Ballot(["a", "d"])])
     rows = out.splitlines()[2:]  # skip header + table header
     # Drop the table-header line if it sorted into the slice; find the data rows.
     data = [line for line in rows if line and not line.startswith("Contestant")]
@@ -153,4 +154,4 @@ def test_ballot_summary_no_ballots() -> None:
 
 def test_ballot_summary_empty_ballots_returns_just_header() -> None:
     # Ballots exist but none rank anyone: turnout line only, no contestant table.
-    assert console.ballot_summary([[], []]) == "2 ballots, field size 0 (all equal)"
+    assert console.ballot_summary([Ballot([]), Ballot([])]) == "2 ballots, field size 0 (all equal)"

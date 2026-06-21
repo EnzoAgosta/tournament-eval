@@ -13,6 +13,7 @@ import pytest
 
 from tournament_eval._lazy_imports import require
 from tournament_eval.aggregation import pairwise
+from tournament_eval.aggregation.ballots import Ballot
 
 
 def test_require_raises_a_clear_importerror_for_a_missing_module() -> None:
@@ -40,7 +41,8 @@ def test_pairwise_matrix_raises_a_clear_importerror_when_numpy_is_missing() -> N
                 "        return None\n"
                 "sys.meta_path.insert(0, _Block())\n"
                 "from tournament_eval.aggregation import pairwise\n"
-                "pairwise.matrix([['a', 'b']])\n"
+                "from tournament_eval.aggregation.ballots import Ballot\n"
+                "pairwise.matrix([Ballot(['a', 'b'])])\n"
             ),
         ],
         capture_output=True,
@@ -54,7 +56,7 @@ def test_pairwise_matrix_raises_a_clear_importerror_when_numpy_is_missing() -> N
 
 def test_pairwise_matrix_counts_head_to_head_above_relationships() -> None:
     # "a" is ranked above "b" on two ballots, "b" above "a" on one.
-    tally = pairwise.matrix([["a", "b"], ["b", "a"], ["a", "b"]])
+    tally = pairwise.matrix([Ballot(["a", "b"]), Ballot(["b", "a"]), Ballot(["a", "b"])])
 
     assert tally.contestants == ["a", "b"]
     assert tally.above.tolist() == [
@@ -65,7 +67,7 @@ def test_pairwise_matrix_counts_head_to_head_above_relationships() -> None:
 
 def test_pairwise_matrix_of_one_full_ordering_fills_the_upper_triangle() -> None:
     # a > b > c: a beats b and c, b beats c, once each; nothing in the lower triangle.
-    tally = pairwise.matrix([["a", "b", "c"]])
+    tally = pairwise.matrix([Ballot(["a", "b", "c"])])
 
     assert tally.contestants == ["a", "b", "c"]
     assert tally.above.tolist() == [
@@ -76,7 +78,7 @@ def test_pairwise_matrix_of_one_full_ordering_fills_the_upper_triangle() -> None
 
 
 def test_pairwise_matrix_sorts_contestants_regardless_of_ballot_order() -> None:
-    tally = pairwise.matrix([["c", "a", "b"]])
+    tally = pairwise.matrix([Ballot(["c", "a", "b"])])
 
     assert tally.contestants == ["a", "b", "c"]
 
@@ -90,13 +92,13 @@ def test_pairwise_matrix_of_no_ballots_is_empty() -> None:
 
 def test_pairwise_matrix_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     with pytest.raises(ValueError, match="more than once"):
-        pairwise.matrix([["a", "b", "a"]])
+        pairwise.matrix([Ballot(["a", "b", "a"])])
 
 
 def test_pairwise_matrix_spans_the_full_expected_set_treating_omissions_as_not_compared() -> None:
     # "c" is never ranked, but the declared universe includes it: it gets a zero row and
     # column (not-compared) rather than vanishing from the matrix.
-    tally = pairwise.matrix([["a", "b"]], expected_contestants={"a", "b", "c"})
+    tally = pairwise.matrix([Ballot(["a", "b"])], expected_contestants={"a", "b", "c"})
 
     assert tally.contestants == ["a", "b", "c"]
     assert tally.above.tolist() == [
@@ -108,16 +110,16 @@ def test_pairwise_matrix_spans_the_full_expected_set_treating_omissions_as_not_c
 
 def test_pairwise_matrix_rejects_a_ballot_with_a_contestant_outside_the_expected_set() -> None:
     with pytest.raises(ValueError, match="outside the expected set"):
-        pairwise.matrix([["a", "b", "z"]], expected_contestants={"a", "b"})
+        pairwise.matrix([Ballot(["a", "b", "z"])], expected_contestants={"a", "b"})
 
 
 def test_pairwise_matrix_strict_rejects_a_ballot_that_omits_an_expected_contestant() -> None:
     with pytest.raises(ValueError, match="omits expected contestant"):
-        pairwise.matrix([["a", "b"]], expected_contestants={"a", "b", "c"}, strict=True)
+        pairwise.matrix([Ballot(["a", "b"])], expected_contestants={"a", "b", "c"}, strict=True)
 
 
 def test_pairwise_matrix_strict_accepts_a_complete_ballot() -> None:
-    tally = pairwise.matrix([["a", "b", "c"]], expected_contestants={"a", "b", "c"}, strict=True)
+    tally = pairwise.matrix([Ballot(["a", "b", "c"])], expected_contestants={"a", "b", "c"}, strict=True)
 
     assert tally.contestants == ["a", "b", "c"]
 
@@ -125,20 +127,20 @@ def test_pairwise_matrix_strict_accepts_a_complete_ballot() -> None:
 def test_copeland_scores_an_omitted_expected_contestant_as_zero() -> None:
     # a beats b on both ballots; c is in the universe but never ranked, so it's
     # not-compared everywhere and nets zero — yet still appears in the leaderboard.
-    scores = pairwise.copeland([["a", "b"], ["a", "b"]], expected_contestants={"a", "b", "c"})
+    scores = pairwise.copeland([Ballot(["a", "b"]), Ballot(["a", "b"])], expected_contestants={"a", "b", "c"})
 
     assert scores == {"a": 1.0, "b": -1.0, "c": 0.0}
 
 
 def test_copeland_strict_rejects_a_ballot_that_omits_an_expected_contestant() -> None:
     with pytest.raises(ValueError, match="omits expected contestant"):
-        pairwise.copeland([["a", "b"]], expected_contestants={"a", "b", "c"}, strict=True)
+        pairwise.copeland([Ballot(["a", "b"])], expected_contestants={"a", "b", "c"}, strict=True)
 
 
 def test_copeland_gives_a_condorcet_winner_the_top_score() -> None:
     # "a" wins its head-to-head against both b and c, so it beats 2 and loses 0 -> +2.
     # b beats c but loses to a -> 0. c loses to both -> -2.
-    scores = pairwise.copeland([["a", "b", "c"], ["a", "c", "b"], ["b", "a", "c"]])
+    scores = pairwise.copeland([Ballot(["a", "b", "c"]), Ballot(["a", "c", "b"]), Ballot(["b", "a", "c"])])
 
     assert scores == {"a": 2.0, "b": 0.0, "c": -2.0}
 
@@ -146,14 +148,14 @@ def test_copeland_gives_a_condorcet_winner_the_top_score() -> None:
 def test_copeland_ties_everyone_at_zero_on_a_condorcet_cycle() -> None:
     # The Condorcet paradox: a>b>c, b>c>a, c>a>b. Each contestant beats exactly one other
     # and loses to exactly one, so every net score is zero — the cycle is visible as a tie.
-    scores = pairwise.copeland([["a", "b", "c"], ["b", "c", "a"], ["c", "a", "b"]])
+    scores = pairwise.copeland([Ballot(["a", "b", "c"]), Ballot(["b", "c", "a"]), Ballot(["c", "a", "b"])])
 
     assert scores == {"a": 0.0, "b": 0.0, "c": 0.0}
 
 
 def test_copeland_treats_an_even_head_to_head_split_as_a_draw() -> None:
     # Two rankers each way: neither takes the majority, so it's neither a win nor a loss.
-    scores = pairwise.copeland([["a", "b"], ["b", "a"]])
+    scores = pairwise.copeland([Ballot(["a", "b"]), Ballot(["b", "a"])])
 
     assert scores == {"a": 0.0, "b": 0.0}
 
@@ -161,7 +163,7 @@ def test_copeland_treats_an_even_head_to_head_split_as_a_draw() -> None:
 def test_copeland_scores_disjoint_groups_independently() -> None:
     # a and b never meet c and d. Within each pair the winner is +1, the loser -1; the
     # cross-pair matchups never happen and count as neither win nor loss.
-    scores = pairwise.copeland([["a", "b"], ["c", "d"]])
+    scores = pairwise.copeland([Ballot(["a", "b"]), Ballot(["c", "d"])])
 
     assert scores == {"a": 1.0, "b": -1.0, "c": 1.0, "d": -1.0}
 
@@ -172,4 +174,4 @@ def test_copeland_of_no_ballots_is_empty() -> None:
 
 def test_copeland_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     with pytest.raises(ValueError, match="more than once"):
-        pairwise.copeland([["a", "b", "a"]])
+        pairwise.copeland([Ballot(["a", "b", "a"])])

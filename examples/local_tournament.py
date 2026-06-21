@@ -50,6 +50,7 @@ from tournament_eval import (
     rank_all,
 )
 from tournament_eval.aggregation import ballots_from_rankings, pairwise, positional
+from tournament_eval.aggregation.ballots import Ballot
 from tournament_eval.orchestration import deanonymize_ranking
 from tournament_eval.presentation import console, plots
 
@@ -254,7 +255,7 @@ def _present(generations: list[GenerationResult], rankings: list[RankingResult])
 def _save_figures(
     normalized_borda: dict[str, float],
     tally: pairwise.PairwiseTally,
-    ballots: list[list[str]],
+    ballots: list[Ballot],
 ) -> None:
     figures = _figures_dir()
     figures.mkdir(parents=True, exist_ok=True)

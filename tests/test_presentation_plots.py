@@ -26,6 +26,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
 from tournament_eval.aggregation import pairwise
+from tournament_eval.aggregation.ballots import Ballot
 from tournament_eval.presentation import plots
 
 
@@ -86,7 +87,7 @@ def test_leaderboard_bar_precision_formats_bar_labels() -> None:
 
 def test_pairwise_heatmap_renders_an_n_by_n_grid_with_diagonal_masked() -> None:
     # Same ballots as the console grid test: above[i,j] = a/b:1, a/c:2, b/c:2.
-    tally = pairwise.matrix([["a", "b", "c"], ["b", "a", "c"]])
+    tally = pairwise.matrix([Ballot(["a", "b", "c"]), Ballot(["b", "a", "c"])])
 
     fig = plots.pairwise_heatmap(tally)
 
@@ -121,7 +122,7 @@ def test_pairwise_heatmap_empty_tally_yields_empty_axes() -> None:
 
 def test_rank_distribution_counts_positions_per_contestant() -> None:
     # a: positions 1, 2, 1 -> {1:2, 2:1}; b: 2, 1, 3 -> {1:1, 2:1, 3:1}; c: 3, 3, 2 -> {2:1, 3:2}
-    ballots = [["a", "b", "c"], ["b", "a", "c"], ["a", "c", "b"]]
+    ballots = [Ballot(["a", "b", "c"]), Ballot(["b", "a", "c"]), Ballot(["a", "c", "b"])]
 
     fig = plots.rank_distribution(ballots)
 
@@ -146,7 +147,7 @@ def test_rank_distribution_counts_positions_per_contestant() -> None:
 def test_rank_distribution_handles_unequal_field_sizes() -> None:
     # A 3-candidate ballot and a 2-candidate ballot: max_field_size = 3, so the
     # grid is 3 columns; the shorter ballot can only place contestants in cols 1-2.
-    ballots = [["a", "b", "c"], ["a", "b"]]
+    ballots = [Ballot(["a", "b", "c"]), Ballot(["a", "b"])]
 
     fig = plots.rank_distribution(ballots)
 

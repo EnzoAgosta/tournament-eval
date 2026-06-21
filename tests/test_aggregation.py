@@ -10,6 +10,7 @@ import pytest
 
 from tests.conftest import GenerationResultFactory, RankingResultFactory
 from tournament_eval.aggregation import ballots_from_rankings, positional
+from tournament_eval.aggregation.ballots import Ballot
 
 
 def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
@@ -34,7 +35,7 @@ def test_importing_tournament_eval_does_not_pull_in_numpy() -> None:
 
 def test_borda_scores_a_single_ballot_top_to_bottom() -> None:
     # A ballot of k=3 awards 2, 1, 0 from best to worst.
-    scores = positional.borda([["x", "y", "z"]])
+    scores = positional.borda([Ballot(["x", "y", "z"])])
 
     assert scores == {"x": 2.0, "y": 1.0, "z": 0.0}
 
@@ -42,9 +43,9 @@ def test_borda_scores_a_single_ballot_top_to_bottom() -> None:
 def test_borda_sums_points_across_ballots() -> None:
     # Three rankers, the same three contestants in different orders.
     ballots = [
-        ["a", "b", "c"],  # a:2 b:1 c:0
-        ["b", "a", "c"],  # b:2 a:1 c:0
-        ["a", "c", "b"],  # a:2 c:1 b:0
+        Ballot(["a", "b", "c"]),  # a:2 b:1 c:0
+        Ballot(["b", "a", "c"]),  # b:2 a:1 c:0
+        Ballot(["a", "c", "b"]),  # a:2 c:1 b:0
     ]
 
     scores = positional.borda(ballots)
@@ -59,19 +60,19 @@ def test_borda_of_no_ballots_is_empty() -> None:
 def test_borda_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     # A duplicate within a ballot is malformed (not a tie) and would double-count.
     with pytest.raises(ValueError, match="more than once"):
-        positional.borda([["a", "b", "a"]])
+        positional.borda([Ballot(["a", "b", "a"])])
 
 
 def test_normalized_borda_rescales_a_single_ballot_to_zero_one() -> None:
     # k=3: raw points 2,1,0 divided by (k-1)=2 -> 1.0, 0.5, 0.0.
-    scores = positional.normalized_borda([["x", "y", "z"]])
+    scores = positional.normalized_borda([Ballot(["x", "y", "z"])])
 
     assert scores == {"x": 1.0, "y": 0.5, "z": 0.0}
 
 
 def test_normalized_borda_averages_a_contestant_over_its_ballots() -> None:
     # "a" tops one ballot and bottoms the other: mean of 1.0 and 0.0 is 0.5.
-    scores = positional.normalized_borda([["a", "b"], ["b", "a"]])
+    scores = positional.normalized_borda([Ballot(["a", "b"]), Ballot(["b", "a"])])
 
     assert scores == {"a": 0.5, "b": 0.5}
 
@@ -80,9 +81,9 @@ def test_normalized_borda_does_not_reward_more_frequent_participation() -> None:
     # x wins its one and only ballot; y wins both of its two. Averaging (not summing)
     # puts them level at 1.0 — frequency of appearance gives no advantage.
     ballots = [
-        ["x", "loser_one"],
-        ["y", "loser_two"],
-        ["y", "loser_three"],
+        Ballot(["x", "loser_one"]),
+        Ballot(["y", "loser_two"]),
+        Ballot(["y", "loser_three"]),
     ]
 
     scores = positional.normalized_borda(ballots)
@@ -94,14 +95,14 @@ def test_normalized_borda_does_not_reward_more_frequent_participation() -> None:
 def test_normalized_borda_silently_skips_ballots_with_no_comparison() -> None:
     # A lone-candidate ballot carries no comparative information: "solo" is dropped
     # silently (no warning), and the size-2 ballot is scored normally.
-    scores = positional.normalized_borda([["solo"], ["a", "b"]])
+    scores = positional.normalized_borda([Ballot(["solo"]), Ballot(["a", "b"])])
 
     assert scores == {"a": 1.0, "b": 0.0}
 
 
 def test_normalized_borda_strict_raises_on_a_no_comparison_ballot() -> None:
     with pytest.raises(ValueError, match="fewer than two candidates"):
-        positional.normalized_borda([["solo"], ["a", "b"]], strict=True)
+        positional.normalized_borda([Ballot(["solo"]), Ballot(["a", "b"])], strict=True)
 
 
 def test_normalized_borda_of_no_ballots_is_empty() -> None:
@@ -110,7 +111,7 @@ def test_normalized_borda_of_no_ballots_is_empty() -> None:
 
 def test_normalized_borda_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     with pytest.raises(ValueError, match="more than once"):
-        positional.normalized_borda([["a", "b", "a"]])
+        positional.normalized_borda([Ballot(["a", "b", "a"])])
 
 
 def test_ballots_from_rankings_resolves_aliases_back_to_authors(
@@ -124,7 +125,9 @@ def test_ballots_from_rankings_resolves_aliases_back_to_authors(
 
     ballots = ballots_from_rankings([ranking_result], [gen_alpha, gen_beta, gen_gamma])
 
-    assert ballots == [["beta", "alpha", "gamma"]]
+    assert len(ballots) == 1
+    assert ballots[0].ranking == ["beta", "alpha", "gamma"]
+    assert ballots[0].author == "test-model"
 
 
 def test_ballots_from_rankings_produces_one_ballot_per_ranking_in_order(
@@ -137,7 +140,8 @@ def test_ballots_from_rankings_produces_one_ballot_per_ranking_in_order(
 
     ballots = ballots_from_rankings([first, second], [gen_alpha, gen_beta])
 
-    assert ballots == [["alpha", "beta"], ["beta", "alpha"]]
+    assert [b.ranking for b in ballots] == [["alpha", "beta"], ["beta", "alpha"]]
+    assert [b.author for b in ballots] == ["test-model", "test-model"]
 
 
 def test_ballots_from_rankings_accepts_single_pass_iterators(
@@ -152,7 +156,9 @@ def test_ballots_from_rankings_accepts_single_pass_iterators(
         (g for g in [gen_alpha, gen_beta]),
     )
 
-    assert ballots == [["alpha", "beta"]]
+    assert len(ballots) == 1
+    assert ballots[0].ranking == ["alpha", "beta"]
+    assert ballots[0].author == "test-model"
 
 
 def test_ballots_from_rankings_raises_on_a_ranked_id_with_no_generation(
@@ -183,3 +189,22 @@ def test_ballots_feed_straight_into_borda_for_a_leaderboard(
     scores = positional.borda(ballots_from_rankings(rankings, generations))
 
     assert scores == {"alpha": 4.0, "beta": 1.0, "gamma": 1.0}
+
+
+def test_ballot_acts_as_a_read_only_sequence_of_labels() -> None:
+    # The math modules read a ballot the same way they read a list[str]: iteration,
+    # len, membership, indexing. author is preserved and identity-aware on equality.
+    ballot = Ballot(["a", "b", "c"], author="r1")
+
+    assert list(ballot) == ["a", "b", "c"]
+    assert len(ballot) == 3
+    assert set(ballot) == {"a", "b", "c"}
+    assert ballot[0] == "a"
+    assert ballot[-1] == "c"
+
+
+def test_ballot_is_identity_aware_two_ballots_with_the_same_ranking_but_different_authors_differ() -> None:
+    # frozen=True gives equality over both ranking and author — load-bearing for bias
+    # analysis, where two rankers producing the same order must not be conflated.
+    assert Ballot(["a", "b"], author="r1") != Ballot(["a", "b"], author="r2")
+    assert Ballot(["a", "b"], author="r1") == Ballot(["a", "b"], author="r1")

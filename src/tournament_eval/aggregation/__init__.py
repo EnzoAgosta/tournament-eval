@@ -22,6 +22,10 @@ and is rejected.
   (Copeland, with more to come).  Need ``numpy`` (the ``analysis`` extra) **at call
   time only** — importing the module does not pull it in, so this package and a plain
   tournament run stay dependency-free until you actually call a pairwise method.
+* :mod:`tournament_eval.aggregation.bias` — ranker preference patterns the aggregate
+  scores hide: a ranker x contestant mean-placement grid and the per-ranker
+  self-preference number.  Pure Python (no ``numpy``), and the one module that reads
+  the ballot's ``author`` — ranker identity *is* the signal there.
 
 The shared bridge from the tournament data model to these methods lives in
 :mod:`tournament_eval.aggregation.ballots`:
@@ -39,12 +43,13 @@ ballot, an omitted expected contestant) takes a ``strict=False`` flag: flip it t
 "raise on anything that would otherwise be handled silently."
 """
 
-from . import pairwise, positional
+from . import bias, pairwise, positional
 from .ballots import Ballot, ballots_from_rankings
 
 __all__ = [
     "Ballot",
     "ballots_from_rankings",
+    "bias",
     "pairwise",
     "positional",
 ]

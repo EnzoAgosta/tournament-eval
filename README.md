@@ -324,12 +324,13 @@ Reading a run back is per-file and typed — `persistence.read_generation_result
 
 ## Aggregation
 
-Collapsing per-ranker rankings into a verdict is a real methodological choice, so the `aggregation` package treats it as a **convenience, not a mandate**: every method is a pure function over plain *ballots* (one ranker's verdict as author labels, best-first), so you can use one, several, or none — and still do your own math over the data on disk. One invariant holds throughout: **ballots are strict total orders, never ties** (the shape `DefaultRankingTemplate` guarantees).
+Collapsing per-ranker rankings into a verdict is a real methodological choice, so the `aggregation` package treats it as a **convenience, not a mandate**: every method is a pure function over plain *ballots* (one ranker's verdict as author labels, best-first, plus the ranker's own `author` label), so you can use one, several, or none — and still do your own math over the data on disk. One invariant holds throughout: **ballots are strict total orders, never ties** (the shape `DefaultRankingTemplate` guarantees).
 
 The package is organised by aggregation style, and you reach for the style you want:
 
 - `tournament_eval.aggregation.positional` — Borda and its normalized variant. Pure Python, **no `numpy` needed**. Scores depend on *where* each ballot ranks a contestant.
 - `tournament_eval.aggregation.pairwise` — the head-to-head tally (`matrix`) and the methods built on it (Copeland, with more to come). Need `numpy` (the `analysis` extra) **at call time only** — importing the module doesn't pull it in, so a plain tournament run stays dependency-free until you actually call a pairwise method.
+- `tournament_eval.aggregation.bias` — ranker preference patterns the aggregate scores hide: a ranker × contestant mean-placement grid and the per-ranker self-preference number. Pure Python (no `numpy`), and the one module that reads the ballot's `author` — ranker identity *is* the signal there.
 
 `ballots_from_rankings` bridges a run to either style, de-anonymizing each ranking's ids back to author labels:
 
@@ -352,6 +353,30 @@ pairwise.copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})
 ```
 
 `pairwise.matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). Calling a pairwise method without the `analysis` extra raises a clear `ImportError` naming the package and the install command — importing the module never fails. More methods (Schulze, Bradley–Terry, …) will land in `pairwise` over time — conservatively, only ones whose results we're confident are accurate.
+
+### Bias as signal
+
+The methodology's headline claim is that *bias becomes a signal*: a peer ranker that overrates itself, or systematically over- or under-places a competitor, is a measurable fact about its calibration — not noise to correct away. The aggregate scores above collapse the panel into a leaderboard and throw ranker identity away; `tournament_eval.aggregation.bias` keeps it, turning the per-ranker preference structure into numbers you can read. Pure Python, like the positional methods — no `analysis` extra.
+
+```python
+from tournament_eval.aggregation import ballots_from_rankings, bias
+
+ballots = ballots_from_rankings(rankings, generations)   # each ballot carries its ranker's `author`
+
+matrix = bias.preference_matrix(ballots)
+# matrix.rankers, matrix.contestants: sorted labels.
+# matrix.placement[i][j]: mean 1-indexed position rankers[i] gave contestants[j]
+# (1 = top, lower is better), or None when they never met. The off-diagonals are
+# the "who over- or under-rates whom" surface; the diagonal is self-placement.
+
+bias.self_preference(ballots)
+# {author: panel_mean_placement(self) − self_mean_placement(self), ...}
+# positive = ranks self higher than the panel does (self-preference);
+# negative = ranks self lower (self-deprecation). The panel baseline excludes
+# the ranker's own ballots, so a self-ranker can't inflate its own reference point.
+```
+
+A ranker that never ranked itself (e.g. its own generation failed for the tasks it judged, so it wasn't a candidate in its own ballots) is absent from `self_preference` — there's no self-placement to compare. Both functions skip ballots with no `author` by default and raise on `strict=True`, the same convention as everywhere else in the package.
 
 Every method that would otherwise silently gloss over something (a sub-two-candidate ballot, an omitted expected contestant) takes a `strict=False` flag: flip it to `True` to raise instead. `strict` means one thing across the package — "raise on anything that would otherwise be handled silently."
 

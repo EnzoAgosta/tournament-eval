@@ -3,20 +3,59 @@
 A *ballot* is the unit every aggregation method consumes: a single ranker's verdict as
 an ordered list of contestant labels, best-first.  :func:`ballots_from_rankings` is the
 only seam where this package reaches into :class:`~tournament_eval.models.RankingResult`;
-the math modules depend only on the :data:`Ballot` shape, never on the data model, so
+the math modules depend only on the :class:`Ballot` shape, never on the data model, so
 they stay pure and testable with hand-written ballots.
+
+:class:`Ballot` also carries the ranker's ``author`` — optional, but always populated by
+:func:`ballots_from_rankings`.  The positional and pairwise math reads only the ranking
+(via the sequence dunders) and ignores the author; the bias analysis
+(:mod:`tournament_eval.aggregation.bias`) reads the author, since ranker identity *is*
+the signal there.
 """
 
-from collections.abc import Iterable
+import dataclasses
+from collections.abc import Iterable, Iterator
 
 from tournament_eval.models import GenerationResult, RankingResult
 from tournament_eval.orchestration import deanonymize_ranking
 
-type Ballot = list[str]
-"""One ranker's verdict: contestant labels (authors) in ranked order, best first.
 
-A strict total order — each label appears at most once, no ties (the invariant the
-whole :mod:`tournament_eval.aggregation` package holds to)."""
+@dataclasses.dataclass(frozen=True, slots=True)
+class Ballot:
+    """One ranker's verdict: contestant labels (authors) in ranked order, best first.
+
+    A strict total order — each label appears at most once, no ties (the invariant the
+    whole :mod:`tournament_eval.aggregation` package holds to).  ``author`` is the
+    ranker that produced this ballot (``None`` when unknown); the positional and pairwise
+    math ignore it, the bias analysis (:mod:`tournament_eval.aggregation.bias`) requires
+    it.  :func:`ballots_from_rankings` always populates it from
+    :attr:`~tournament_eval.models.RankingResult.author`.
+
+    Acts like a read-only sequence of labels via ``__iter__`` / ``__len__`` /
+    ``__getitem__`` so the math modules read a ballot the same way they read a plain
+    ``list[str]`` — ``for label in ballot``, ``len(ballot)``, ``enumerate(ballot)``,
+    ``set(ballot)``, ``ballot[i]`` all work.  ``frozen=True`` makes the ballot
+    identity-aware (two ballots over the same ranking but from different authors
+    compare unequal — load-bearing for bias analysis), and prevents reassigning
+    ``ranking``; the backing list could still be mutated in place by a determined caller,
+    but :func:`reject_ties` guards every entry point the way it always has.  Not
+    hashable — ``ranking`` is a list — but nothing here needs ballot hashing.
+    """
+
+    ranking: list[str]
+    """Contestant labels best-first — a strict total order, no repeats."""
+    author: str | None = None
+    """The ranker that produced this ballot (``None`` when unknown).  Ignored by the
+    positional/pairwise math; required by the bias analysis."""
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.ranking)
+
+    def __len__(self) -> int:
+        return len(self.ranking)
+
+    def __getitem__(self, index: int) -> str:
+        return self.ranking[index]
 
 
 def reject_ties(ballot: Ballot) -> None:
@@ -39,8 +78,10 @@ def ballots_from_rankings(
     Each ranking ranks :class:`~tournament_eval.models.GenerationResult` *ids* (in
     anonymized alias space); this resolves every one back to its contestant ``author``
     via :func:`~tournament_eval.orchestration.deanonymize_ranking`, yielding one
-    :data:`Ballot` per ranking — exactly what :func:`~tournament_eval.aggregation.positional.borda`
-    and the other methods expect.
+    :class:`Ballot` per ranking — exactly what :func:`~tournament_eval.aggregation.positional.borda`
+    and the other methods expect.  The ballot's ``author`` is the ranking ranker's
+    author, so bias analysis downstream of this adapter has ranker identity in reach
+    without a second pass over the data model.
 
     Parameters
     ----------
@@ -54,7 +95,8 @@ def ballots_from_rankings(
     Returns
     -------
     list[Ballot]
-        One ballot per ranking result, each contestant labels best-first.
+        One ballot per ranking result, each contestant labels best-first and carrying
+        its ranker's ``author``.
 
     Raises
     ------
@@ -64,4 +106,7 @@ def ballots_from_rankings(
         :func:`~tournament_eval.orchestration.deanonymize_ranking`'s behaviour).
     """
     generations = list(generation_results)
-    return [deanonymize_ranking(ranking_result, generations) for ranking_result in ranking_results]
+    return [
+        Ballot(ranking=deanonymize_ranking(ranking_result, generations), author=ranking_result.author)
+        for ranking_result in ranking_results
+    ]
