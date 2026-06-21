@@ -318,7 +318,7 @@ results, failures = await generate_all(
 
 `rank_all` works identically, keyed on `(ranking_task, author)` against its own `results_path`.
 
-Reading a run back is per-file and typed — `read_generation_result_file`, `read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. Writing anything yourself (e.g. persisting your tasks) is the one type-agnostic `append_record(path, record)`.
+Reading a run back is per-file and typed — `persistence.read_generation_result_file`, `persistence.read_ranking_result_file`, and friends each restore the original dataclasses, UUIDs and all. Writing anything yourself (e.g. persisting your tasks) is the one type-agnostic `persistence.append_record(path, record)`.
 
 **One caveat — ranking tasks freeze.** A `RankingTask` carries a random alias shuffle, so `build_ranking_tasks(..., tasks_path="run/ranking_tasks.jsonl")` builds each task once and, on a rerun, reuses the persisted one rather than rebuilding (a rebuild would re-shuffle and orphan every ranking already collected). The consequence: a generation that only succeeds on a *later* resume won't be added to an already-built ranking task. So **let generation finish before you start ranking** — run `generate_all` until its `failures` are empty, then build ranking tasks. To deliberately rebuild, delete the ranking-tasks file (and any rankings) first.
 
@@ -355,7 +355,7 @@ pairwise.copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})
 
 Every method that would otherwise silently gloss over something (a sub-two-candidate ballot, an omitted expected contestant) takes a `strict=False` flag: flip it to `True` to raise instead. `strict` means one thing across the package — "raise on anything that would otherwise be handled silently."
 
-Prefer to roll your own? `deanonymize_ranking(ranking_result, generations)` returns one ranking's authors best-first — a pure function over the `generations` you already have (from `generate_all` or `read_generation_result_file`), composing with whatever aggregation you choose.
+Prefer to roll your own? `tournament_eval.orchestration.deanonymize_ranking(ranking_result, generations)` returns one ranking's authors best-first — a pure function over the `generations` you already have (from `generate_all` or `persistence.read_generation_result_file`), composing with whatever aggregation you choose.
 
 ## Tested and typed
 

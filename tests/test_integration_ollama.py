@@ -45,7 +45,6 @@ from tournament_eval import (  # noqa: E402
     DefaultRankingTemplate,
     build_generation_tasks,
     build_ranking_tasks,
-    deanonymize_ranking,
     generate_all,
     rank_all,
 )
@@ -55,6 +54,7 @@ from tournament_eval.aggregation import (  # noqa: E402
     positional,
 )
 from tournament_eval.models import GenerationResult, RankingFailure, RankingResult  # noqa: E402
+from tournament_eval.orchestration import deanonymize_ranking  # noqa: E402
 
 # A real Ollama server is a hard requirement, and the models must be pulled.
 _OLLAMA_BASE_URL = "http://localhost:11434/v1"

@@ -11,82 +11,53 @@ to :func:`~tournament_eval.orchestration.generate_all` /
 :func:`~tournament_eval.orchestration.rank_all`.  This package owns the
 methodology — the tasks, the aliasing, the resume, the persistence — and leans on
 pydantic-ai for everything LLM.
+
+The top level is the happy path: build tasks, generate, build ranking tasks,
+rank, and the records + ranking contract you touch along the way.  Everything
+else keeps its module home — the on-disk JSON shapes (``*Dict``) and the typed
+readers/writer live in :mod:`tournament_eval.persistence` and
+:mod:`tournament_eval.models`; the template-authoring internals
+(:class:`~tournament_eval.ranking.RankingResponse`, :class:`~tournament_eval.ranking.ParsedRanking`,
+:func:`~tournament_eval.ranking.alias_for_index`) live in
+:mod:`tournament_eval.ranking`; and aggregation lives in
+:mod:`tournament_eval.aggregation`.
 """
 
 from .models import (
     GenerationFailure,
-    GenerationFailureDict,
     GenerationResult,
-    GenerationResultDict,
     GenerationTask,
-    GenerationTaskDict,
     RankingFailure,
-    RankingFailureDict,
     RankingResult,
-    RankingResultDict,
     RankingTask,
-    RankingTaskDict,
 )
 from .orchestration import (
     build_generation_task,
     build_generation_tasks,
     build_ranking_task,
     build_ranking_tasks,
-    deanonymize_ranking,
     generate_all,
     generate_one,
     rank_all,
     rank_one,
 )
-from .persistence import (
-    append_record,
-    read_generation_failure_file,
-    read_generation_result_file,
-    read_generation_task_file,
-    read_ranking_failure_file,
-    read_ranking_result_file,
-    read_ranking_task_file,
-)
-from .ranking import (
-    DefaultRankingTemplate,
-    ParsedRanking,
-    RankingResponse,
-    RankingTemplate,
-    alias_for_index,
-)
+from .ranking import DefaultRankingTemplate, RankingTemplate
 
 __all__ = [
     "DefaultRankingTemplate",
     "GenerationFailure",
-    "GenerationFailureDict",
     "GenerationResult",
-    "GenerationResultDict",
     "GenerationTask",
-    "GenerationTaskDict",
-    "ParsedRanking",
     "RankingFailure",
-    "RankingFailureDict",
-    "RankingResponse",
     "RankingResult",
-    "RankingResultDict",
     "RankingTask",
-    "RankingTaskDict",
     "RankingTemplate",
-    "alias_for_index",
-    "append_record",
     "build_generation_task",
     "build_generation_tasks",
     "build_ranking_task",
     "build_ranking_tasks",
-    "deanonymize_ranking",
     "generate_all",
     "generate_one",
     "rank_all",
     "rank_one",
-    "read_generation_failure_file",
-    "read_generation_result_file",
-    "read_generation_task_file",
-    "read_ranking_failure_file",
-    "read_ranking_result_file",
-    "read_ranking_task_file",
 ]
