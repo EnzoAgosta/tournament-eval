@@ -992,6 +992,7 @@ openai = [
 dev = [
     { name = "mypy" },
     { name = "numpy" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1015,6 +1016,7 @@ provides-extras = ["openai", "google", "anthropic", "bedrock", "analysis"]
 dev = [
     { name = "mypy", specifier = ">=2.1.0" },
     { name = "numpy", specifier = ">=2.4.6" },
+    { name = "openai", specifier = ">=2.43.0" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
