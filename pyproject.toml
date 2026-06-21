@@ -19,12 +19,14 @@ analysis = [
     "numpy>=2.4.6",
     "scipy>=1.17.1",
 ]
+plotting = ["matplotlib>=3.11.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tournament_eval"]
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.11.0",
     "mypy>=2.1.0",
     "numpy>=2.4.6",
     "openai>=2.43.0",

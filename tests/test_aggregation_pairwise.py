@@ -11,14 +11,14 @@ imports it on demand.
 
 import pytest
 
+from tournament_eval._lazy_imports import require
 from tournament_eval.aggregation import pairwise
-from tournament_eval.aggregation._imports import require
 
 
 def test_require_raises_a_clear_importerror_for_a_missing_module() -> None:
 
     with pytest.raises(ImportError, match="is required here but isn't installed") as exc_info:
-        require("definitely_not_a_real_module_xyzzy")
+        require("definitely_not_a_real_module_xyzzy", extra="analysis")
     assert "analysis" in str(exc_info.value)
 
 

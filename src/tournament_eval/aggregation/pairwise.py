@@ -10,7 +10,7 @@ ordered pair ``(i, j)``, how many ballots rank contestant ``i`` above contestant
 even defining :class:`PairwiseTally` with its numpy-typed field — pulls in no
 heavy dependency: ``numpy`` is referenced only under ``TYPE_CHECKING`` (for the type
 aliases) and imported lazily inside each function via
-:func:`~tournament_eval.aggregation._imports.require`.  So a plain ``import
+:func:`~tournament_eval._lazy_imports.require`.  So a plain ``import
 tournament_eval.aggregation.pairwise`` stays dependency-free; calling any function here
 without the ``analysis`` extra raises a clear :class:`ImportError` naming the package and
 the install command.
@@ -26,7 +26,7 @@ import dataclasses
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from tournament_eval.aggregation._imports import require
+from tournament_eval._lazy_imports import require
 from tournament_eval.aggregation.ballots import Ballot, reject_ties
 
 if TYPE_CHECKING:
@@ -113,7 +113,7 @@ def matrix(
     Requires ``numpy`` (the ``analysis`` extra) at call time; importing this module does
     not.  A missing extra raises :class:`ImportError` with the install command.
     """
-    require("numpy")
+    require("numpy", extra="analysis")
     import numpy as np
 
     expected = set(expected_contestants) if expected_contestants is not None else None
