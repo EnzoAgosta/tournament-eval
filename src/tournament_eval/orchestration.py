@@ -250,6 +250,21 @@ def _extract_ranking_failure_details(
     return details or None
 
 
+def _per_task_seed(base_seed: int, generation_task_id: uuid.UUID) -> int:
+    """Derive a distinct, reproducible shuffle seed for one ranking task.
+
+    The base seed is mixed with the task's ``generation_task_id`` so two tasks
+    built from the same base seed and the same candidate ordering still get
+    distinct shuffles.  Without this, alias ``A`` would map to the same author in
+    every task, leaking authorship to a ranker that sees several tasks.  Task ids
+    are the resume-stability anchor (stable across rebuilds), so deriving from
+    them keeps the shuffle reproducible: delete the ranking-tasks file and rebuild
+    and the per-task shuffles come back identical.  XOR with a fixed operand is
+    injective, so distinct task ids yield distinct seeds.
+    """
+    return base_seed ^ generation_task_id.int
+
+
 def build_generation_task(
     prompt: str,
     *,
@@ -598,7 +613,10 @@ def build_ranking_tasks(
         If set, RankingTasks are streamed here as built and read back for per-task
         resume.
     random_seed : int | None
-        Seed for the per-task alias shuffle; ``None`` for nondeterministic.
+        Base seed for the per-task alias shuffle; ``None`` for nondeterministic.
+        When set, a distinct seed is derived per task from this and the task's
+        ``generation_task_id`` (see :func:`_per_task_seed`) so a fixed base seed
+        doesn't make alias ``A`` track the same author across tasks.
 
     Returns
     -------
@@ -622,8 +640,9 @@ def build_ranking_tasks(
         if task.id in existing:
             ranking_tasks.append(existing[task.id])
         else:
+            per_task_seed = None if random_seed is None else _per_task_seed(random_seed, task.id)
             ranking_tasks.append(
-                build_ranking_task(results, ranking_prompt, tasks_path=tasks_path, random_seed=random_seed)
+                build_ranking_task(results, ranking_prompt, tasks_path=tasks_path, random_seed=per_task_seed)
             )
     return ranking_tasks
 

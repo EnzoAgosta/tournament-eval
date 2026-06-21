@@ -37,6 +37,7 @@ from tests.conftest import (
 from tournament_eval.models import GenerationFailure, GenerationResult, RankingFailure, RankingResult, RankingTask
 from tournament_eval.orchestration import (
     _extract_ranking_failure_details,
+    _per_task_seed,
     _resolve_author,
     build_generation_task,
     build_generation_tasks,
@@ -445,6 +446,42 @@ def test_build_ranking_tasks_skips_tasks_without_results(make_generation_task: G
     tasks = make_generation_task()
     ranking_task = build_ranking_tasks(tasks=[tasks], generation_results=[], ranking_prompt="Test")
     assert len(ranking_task) == 0
+
+
+def test_per_task_seed_is_distinct_per_task() -> None:
+    # XOR with a fixed operand is injective, so distinct task ids yield distinct seeds.
+    base = 42
+    a = _per_task_seed(base, uuid.UUID("00000000-0000-4000-8000-000000000001"))
+    b = _per_task_seed(base, uuid.UUID("00000000-0000-4000-8000-000000000002"))
+    assert a != b
+
+
+def test_build_ranking_tasks_seed_is_reproducible_across_builds(
+    make_generation_task: GenerationTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    # Same base seed + same task ids (stable) => identical shuffles on rebuild.
+    tasks = [make_generation_task() for _ in range(3)]
+    results = [make_generation_result(generation_task_id=task.id, author=f"m{i}") for task in tasks for i in range(5)]
+    first = build_ranking_tasks(tasks=tasks, generation_results=results, ranking_prompt="T", random_seed=42)
+    second = build_ranking_tasks(tasks=tasks, generation_results=results, ranking_prompt="T", random_seed=42)
+    assert [t.generations for t in first] == [t.generations for t in second]
+
+
+def test_build_ranking_tasks_seed_varies_shuffles_across_tasks(
+    make_generation_task: GenerationTaskFactory, make_generation_result: GenerationResultFactory
+) -> None:
+    # Fixed base seed, identical candidate ordering per task: the per-task seed
+    # derivation must keep alias A from tracking the same author across tasks.
+    # With 8 candidates and 8 tasks the chance all alias-A maps coincide is
+    # ~(1/8)^7, so this is effectively deterministic; it's a regression guard for
+    # the cross-task alias leak, not a mathematical guarantee.
+    tasks = [make_generation_task() for _ in range(8)]
+    results = [make_generation_result(generation_task_id=task.id, author=f"m{i}") for task in tasks for i in range(8)]
+    author_by_id = {r.id: r.author for r in results}
+    ranking_tasks = build_ranking_tasks(tasks=tasks, generation_results=results, ranking_prompt="T", random_seed=42)
+    # alias_for_index(0) == "A"; insertion order puts it first in generations.
+    alias_a_authors = {author_by_id[next(iter(rt.generations.values()))] for rt in ranking_tasks}
+    assert len(alias_a_authors) > 1
 
 
 async def test_rank_one_returns_ranking_result(
