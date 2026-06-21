@@ -17,7 +17,7 @@ import dataclasses
 from collections.abc import Iterable, Iterator
 
 from tournament_eval.models import GenerationResult, RankingResult
-from tournament_eval.orchestration import deanonymize_ranking
+from tournament_eval.orchestration import _ranking_authors
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -77,8 +77,10 @@ def ballots_from_rankings(
 
     Each ranking ranks :class:`~tournament_eval.models.GenerationResult` *ids* (in
     anonymized alias space); this resolves every one back to its contestant ``author``
-    via :func:`~tournament_eval.orchestration.deanonymize_ranking`, yielding one
-    :class:`Ballot` per ranking — exactly what :func:`~tournament_eval.aggregation.positional.borda`
+    with the same id-to-author lookup as
+    :func:`~tournament_eval.orchestration.deanonymize_ranking`, built **once** here and
+    reused across every ranking, yielding one :class:`Ballot` per ranking — exactly what
+    :func:`~tournament_eval.aggregation.positional.borda`
     and the other methods expect.  The ballot's ``author`` is the ranking ranker's
     author, so bias analysis downstream of this adapter has ranker identity in reach
     without a second pass over the data model.
@@ -105,8 +107,8 @@ def ballots_from_rankings(
         a data-integrity error surfaced loudly (this is
         :func:`~tournament_eval.orchestration.deanonymize_ranking`'s behaviour).
     """
-    generations = list(generation_results)
+    author_by_id = {generation.id: generation.author for generation in generation_results}
     return [
-        Ballot(ranking=deanonymize_ranking(ranking_result, generations), author=ranking_result.author)
+        Ballot(ranking=_ranking_authors(ranking_result, author_by_id), author=ranking_result.author)
         for ranking_result in ranking_results
     ]

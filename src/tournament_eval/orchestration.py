@@ -477,10 +477,10 @@ async def generate_all(
         pair still without one.
     """
     agents_list = list(agents)
-    _check_distinct_authors(agents_list)
+    agents_with_authors = list(zip(agents_list, _check_distinct_authors(agents_list), strict=True))
     loaded = persistence.read_generation_result_file(results_path) if results_path is not None else []
     valid_ids = {task.id for task in tasks}
-    valid_authors = {_resolve_author(agent) for agent in agents_list}
+    valid_authors = {author for _, author in agents_with_authors}
     done: dict[tuple[uuid.UUID, str], GenerationResult] = {
         (result.generation_task_id, result.author): result
         for result in loaded
@@ -496,8 +496,8 @@ async def generate_all(
             on_failure=on_failure,
         )
         for task in tasks
-        for agent in agents_list
-        if (task.id, _resolve_author(agent)) not in done
+        for agent, author in agents_with_authors
+        if (task.id, author) not in done
     ]
     outcomes = await asyncio.gather(*coros)
 
@@ -796,12 +796,12 @@ async def rank_all(
     """
     template = template or _DEFAULT_TEMPLATE
     agents_list = list(agents)
-    _check_distinct_authors(agents_list)
+    agents_with_authors = list(zip(agents_list, _check_distinct_authors(agents_list), strict=True))
     _check_output_types(agents_list, template)
     generation_lookup = {result.id: result for result in generation_results}
     loaded = persistence.read_ranking_result_file(results_path) if results_path is not None else []
     valid_ids = {ranking_task.id for ranking_task in ranking_tasks}
-    valid_authors = {_resolve_author(a) for a in agents_list}
+    valid_authors = {author for _, author in agents_with_authors}
     done: dict[tuple[uuid.UUID, str], RankingResult] = {
         (result.ranking_task_id, result.author): result
         for result in loaded
@@ -819,8 +819,8 @@ async def rank_all(
             on_failure=on_failure,
         )
         for ranking_task in ranking_tasks
-        for agent in agents_list
-        if (ranking_task.id, _resolve_author(agent)) not in done
+        for agent, author in agents_with_authors
+        if (ranking_task.id, author) not in done
     ]
     outcomes = await asyncio.gather(*coros)
 
@@ -864,4 +864,15 @@ def deanonymize_ranking(
         ``["gpt-4o", "claude-sonnet-4-6", ...]``.
     """
     author_by_id = {generation.id: generation.author for generation in generations}
+    return _ranking_authors(ranking_result, author_by_id)
+
+
+def _ranking_authors(ranking_result: RankingResult, author_by_id: dict[uuid.UUID, str]) -> list[str]:
+    """Map one ranking's de-anonymized ids to author labels against a prebuilt lookup.
+
+    The shared core of :func:`deanonymize_ranking` (which builds the lookup for a single
+    call) and :func:`~tournament_eval.aggregation.ballots.ballots_from_rankings` (which
+    builds it once and reuses it across every ranking, rather than rebuilding an O(N)
+    map per ranking).  Raises :class:`KeyError` if a ranked id isn't in ``author_by_id``.
+    """
     return [author_by_id[generation_id] for generation_id in ranking_result.ranking]
