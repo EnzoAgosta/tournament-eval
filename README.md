@@ -357,6 +357,41 @@ Every method that would otherwise silently gloss over something (a sub-two-candi
 
 Prefer to roll your own? `tournament_eval.orchestration.deanonymize_ranking(ranking_result, generations)` returns one ranking's authors best-first — a pure function over the `generations` you already have (from `generate_all` or `persistence.read_generation_result_file`), composing with whatever aggregation you choose.
 
+## Presentation
+
+A run hands you data; `tournament_eval.presentation` hands you the handful of shapes everyone reaches for at the end of a run — text tables and plots over the aggregation results. A *convenience* layer in the same spirit as `aggregation`: pure functions you opt into, never a mandate. Not re-exported at the top level — reach for it via its submodule, the way `aggregation` is reached.
+
+### Console (no extra dependencies)
+
+`tournament_eval.presentation.console` renders aligned text tables — pure Python, returns `str` (never prints), so the output composes with your own surrounding text:
+
+```python
+from tournament_eval.presentation import console
+
+print(console.leaderboard(positional.normalized_borda(ballots)))
+print(console.pairwise_matrix(pairwise.matrix(ballots)))
+print(console.ballot_summary(ballots))
+```
+
+### Plots (the `plotting` extra)
+
+`tournament_eval.presentation.plots` renders matplotlib figures — `leaderboard_bar`, `pairwise_heatmap`, and `rank_distribution`. Each builds and returns a `Figure`; it never calls `plt.show` or touches your global pyplot state, so call `fig.savefig(...)` or `fig.show()` yourself.
+
+`rank_distribution` is the one most worth reaching for: a per-contestant × position heatmap of how often each model landed in each slot, surfacing the panel's agreement-or-split that the aggregate score hides — the methodology's "bias as signal" story made visual.
+
+```bash
+uv add tournament-eval --extra plotting      # + matplotlib
+```
+
+```python
+from tournament_eval.presentation import plots
+
+fig = plots.rank_distribution(ballots)
+fig.savefig("rank_distribution.png")
+```
+
+Importing the module pulls in neither matplotlib nor numpy — only *calling* a plot function does. A missing `plotting` extra raises a clear `ImportError` naming the package and the install command, the same pattern as the pairwise methods and `numpy`.
+
 ## Tested and typed
 
 - 100% source coverage; `mypy --strict` and `ruff` clean.

@@ -222,3 +222,6 @@ __marimo__/
 # Claude and vscode settings
 .vscode/
 .claude/
+
+# Example tournament run output (the script is committed; its data isn't)
+examples/run/
