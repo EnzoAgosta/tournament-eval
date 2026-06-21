@@ -48,6 +48,7 @@ import asyncio
 import random
 import uuid
 import warnings
+from collections import Counter
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -111,15 +112,10 @@ def _check_distinct_authors[DepsT, OutT](
     rather than silent data loss.
     """
     authors = [_resolve_author(agent) for agent in agents]
-    seen: dict[str, int] = {}
-    dups: list[str] = []
-    for a in authors:
-        seen[a] = seen.get(a, 0) + 1
-        if seen[a] == 2:
-            dups.append(a)
+    dups = sorted(author for author, count in Counter(authors).items() if count > 1)
     if dups:
         raise ValueError(
-            f"Duplicate agent authors {sorted(dups)!r} - two agents resolve to the same "
+            f"Duplicate agent authors {dups!r} - two agents resolve to the same "
             "author label, which would corrupt resume and de-anonymisation. "
             "Set distinct agent.name= (or use distinct models)."
         )
@@ -151,12 +147,13 @@ def _extract_reasoning(messages: list[ModelMessage]) -> str | None:
     model produced no thinking parts.  Some providers surface raw reasoning only in
     ``provider_details``; we don't chase that yet.
     """
-    chunks: list[str] = []
-    for msg in messages:
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ThinkingPart) and part.content:
-                    chunks.append(part.content)
+    chunks = [
+        part.content
+        for msg in messages
+        if isinstance(msg, ModelResponse)
+        for part in msg.parts
+        if isinstance(part, ThinkingPart) and part.content
+    ]
     return "\n".join(chunks) if chunks else None
 
 

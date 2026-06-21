@@ -205,5 +205,5 @@ def copeland(
 
     beats = above > above.T
     beaten = above < above.T
-    net = beats.sum(axis=1).astype(int) - beaten.sum(axis=1).astype(int)
+    net = beats.sum(axis=1) - beaten.sum(axis=1)
     return {label: float(net[i]) for i, label in enumerate(tally.contestants)}

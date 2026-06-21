@@ -141,15 +141,7 @@ def pairwise_heatmap(tally: PairwiseTally) -> _Figure:
     if n > 0:
         # Pure-Python grid; NaN on the diagonal so the self-matchup cell renders
         # blank instead of showing a misleading 0 count.
-        data: list[list[float]] = []
-        for i in range(n):
-            row: list[float] = []
-            for j in range(n):
-                if i == j:
-                    row.append(float("nan"))
-                else:
-                    row.append(float(int(tally.above[i, j])))
-            data.append(row)
+        data = [[float("nan") if i == j else float(int(tally.above[i, j])) for j in range(n)] for i in range(n)]
         image = ax.imshow(data, cmap="Blues")
         ax.set_xticks(range(n), contestants, rotation=45, ha="right")
         ax.set_yticks(range(n), contestants)
