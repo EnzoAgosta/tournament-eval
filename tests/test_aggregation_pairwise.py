@@ -175,3 +175,105 @@ def test_copeland_of_no_ballots_is_empty() -> None:
 def test_copeland_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
     with pytest.raises(ValueError, match="more than once"):
         pairwise.copeland([Ballot(["a", "b", "a"])])
+
+
+# --- schulze -----------------------------------------------------------------
+# Known-answer tests for the Schulze method, mirroring the Copeland tests above.
+# Every expected value is computed by hand from the ballots (verified against a
+# scratch Floyd-Warschulze run), so the tests pin the *meaning* of the method —
+# Condorcet consistency, cycle resolution via beatpath widths, and tie behaviour —
+# rather than its current code.
+
+
+def test_schulze_gives_a_condorcet_winner_the_top_score() -> None:
+    # a beats b (2:1) and c (3:0); b beats c (2:1). a is the Condorcet winner, so
+    # it beatpath-beats both -> score 2; b beats c -> 1; c beats nobody -> 0.
+    scores = pairwise.schulze([Ballot(["a", "b", "c"]), Ballot(["a", "c", "b"]), Ballot(["b", "a", "c"])])
+
+    assert scores == {"a": 2.0, "b": 1.0, "c": 0.0}
+
+
+def test_schulze_resolves_a_condorcet_cycle_where_copeland_ties() -> None:
+    # The Condorcet paradox: a>b>c, b>c>a, c>a>b. Every head-to-head is 2:1, so
+    # Copeland ties everyone at 0. Schulze breaks the cycle via beatpath widths:
+    # each contestant's strongest beatpath to every other is 2 (e.g. a->b direct
+    # is 2; a->c runs a->b->c, min(2,2)=2), so all three pairwise beatpath
+    # comparisons tie 2-vs-2 and everyone scores 0 — a *Schulze tie* on a
+    # perfectly symmetric cycle, which the method legitimately declares rather
+    # than manufacturing an arbitrary winner.
+    scores = pairwise.schulze([Ballot(["a", "b", "c"]), Ballot(["b", "c", "a"]), Ballot(["c", "a", "b"])])
+
+    assert scores == {"a": 0.0, "b": 0.0, "c": 0.0}
+
+
+def test_schulze_breaks_a_copeland_tie_via_beatpath_widths() -> None:
+    # A profile where Copeland ties (it counts only direct head-to-head wins) but
+    # Schulze breaks the tie via beatpath widths.
+    #
+    # Ballots (5, over 4 contestants):
+    #   [a,b,c,d], [a,b,c,d], [b,c,d,a], [c,d,a,b], [d,a,b,c]
+    # Direct head-to-head wins:
+    #   a>b 4:1  a>c 3:2  a>d 2:3 (d wins)
+    #   b>c 4:1  b>d 3:2
+    #   c>d 4:1
+    # Copeland: a wins 2 loses 1 = +1; b wins 2 loses 1 = +1 (a,b tied);
+    #           c wins 1 loses 2 = -1; d wins 1 loses 2 = -1 (c,d tied).
+    # Schulze beatpath widths P[i,j] (strongest = max over chains of the min link):
+    #   P[a,b]=4 (direct 4:1 is the widest one-link path); P[b,a]=3 (b->c->d->a
+    #     = min(4,4,3)=3). 4 > 3, so a beatpath-beats b.
+    #   The same 4-vs-3 pattern holds for every ordered pair (a direct 4:1 win
+    #     somewhere up the chain vs a 3-wide indirect path back), yielding a
+    #     strict beatpath order a > b > c > d.
+    ballots = [
+        Ballot(["a", "b", "c", "d"]),
+        Ballot(["a", "b", "c", "d"]),
+        Ballot(["b", "c", "d", "a"]),
+        Ballot(["c", "d", "a", "b"]),
+        Ballot(["d", "a", "b", "c"]),
+    ]
+
+    schulze_scores = pairwise.schulze(ballots)
+    copeland_scores = pairwise.copeland(ballots)
+
+    # Copeland ties a=b and c=d (ignores beatpath width).
+    assert copeland_scores == {"a": 1.0, "b": 1.0, "c": -1.0, "d": -1.0}
+    # Schulze breaks both ties into a strict order a > b > c > d.
+    assert schulze_scores == {"a": 3.0, "b": 2.0, "c": 1.0, "d": 0.0}
+
+
+def test_schulze_treats_an_even_head_to_head_split_as_a_draw() -> None:
+    # Two rankers each way: each contestant's beatpath to the other is 1, so
+    # neither beatpath-beats the other -> both score 0 (a Schulze tie, not a win).
+    scores = pairwise.schulze([Ballot(["a", "b"]), Ballot(["b", "a"])])
+
+    assert scores == {"a": 0.0, "b": 0.0}
+
+
+def test_schulze_scores_a_single_contestant_zero() -> None:
+    # One contestant beats no one (no opponents), so it scores 0 — the empty-field
+    # baseline, matching Copeland's behaviour.
+    scores = pairwise.schulze([Ballot(["a"])])
+
+    assert scores == {"a": 0.0}
+
+
+def test_schulze_of_no_ballots_is_empty() -> None:
+    assert pairwise.schulze([]) == {}
+
+
+def test_schulze_scores_an_omitted_expected_contestant_as_zero() -> None:
+    # a beats b on both ballots; c is in the universe but never ranked, so it has
+    # no beatpaths and beats no one -> 0, yet still appears in the leaderboard.
+    scores = pairwise.schulze([Ballot(["a", "b"]), Ballot(["a", "b"])], expected_contestants={"a", "b", "c"})
+
+    assert scores == {"a": 1.0, "b": 0.0, "c": 0.0}
+
+
+def test_schulze_strict_rejects_a_ballot_that_omits_an_expected_contestant() -> None:
+    with pytest.raises(ValueError, match="omits expected contestant"):
+        pairwise.schulze([Ballot(["a", "b"])], expected_contestants={"a", "b", "c"}, strict=True)
+
+
+def test_schulze_raises_on_a_contestant_appearing_twice_in_one_ballot() -> None:
+    with pytest.raises(ValueError, match="more than once"):
+        pairwise.schulze([Ballot(["a", "b", "a"])])

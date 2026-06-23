@@ -1,10 +1,10 @@
 """Pairwise aggregation: methods that look at who beat whom, head-to-head.
 
-Every non-positional aggregation method — Copeland, minimax, Schulze, Bradley-Terry,
+Every non-positional aggregation method — Copeland, Schulze, minimax, Bradley-Terry,
 … — is a function of one shared object: the head-to-head matrix counting, for every
 ordered pair ``(i, j)``, how many ballots rank contestant ``i`` above contestant ``j``.
 :func:`matrix` builds that tally once so the methods built on it don't each re-derive it;
-:func:`copeland` is the first such method.
+:func:`copeland` and :func:`schulze` are the first two such methods.
 
 **``numpy`` is required at call time, not import time.**  Importing this module — and
 even defining :class:`PairwiseTally` with its numpy-typed field — pulls in no
@@ -207,3 +207,105 @@ def copeland(
     beaten = above < above.T
     net = beats.sum(axis=1) - beaten.sum(axis=1)
     return {label: float(net[i]) for i, label in enumerate(tally.contestants)}
+
+
+def schulze(
+    ballots: Iterable[Ballot],
+    *,
+    expected_contestants: Iterable[str] | None = None,
+    strict: bool = False,
+) -> dict[str, float]:
+    """Schulze-score a collection of ballots via strongest-beatpath widths.
+
+    The Schulze method resolves a set of strict rankings by computing, for every
+    ordered pair of contestants ``(i, j)``, the *strongest beatpath* width from
+    ``i`` to ``j`` — the maximum, over every chain
+    ``i = x_0 \u2192 x_1 \u2192 \u2026 \u2192 x_m = j`` where each link beats the next
+    head-to-head, of the weakest link in that chain (a bottleneck/flooding-style
+    max-min path).
+    Contestant ``i`` beats ``j`` in the Schulze sense when ``i``\u2019s beatpath to
+    ``j`` is wider than ``j``\u2019s back to ``i``; a contestant\u2019s score is how
+    many others it beats that way.  Higher is better; the top scorer is the
+    Schulze winner, which coincides with the Condorcet winner whenever one exists
+    (a Condorcet winner\u2019s direct win is the widest possible beatpath, so no
+    one beats it back) and resolves Condorcet cycles deterministically otherwise.
+
+    Three properties make it a strong default over Copeland for ranked ballots:
+    it is **Condorcet-consistent** (a head-to-head majority winner always tops
+    the result), **monotone** (ranking a contestant higher on a ballot can never
+    *lower* its Schulze standing), and **cloneproof** (adding a near-identical
+    \u201cclone\u201d of a contestant doesn\u2019t change the non-clones\u2019
+    relative order or hand the clone-group an advantage).  Copeland shares the
+    first but not the other two, and routinely *ties* on cycles (every cycle
+    member scores 0); Schulze breaks those ties via the beatpath widths, so it
+    produces a strict order where Copeland declares a dead heat.
+
+    The score itself \u2014 *number of opponents beatpath-beaten* \u2014 makes the
+    method drop-in with :func:`copeland` and the positional methods for
+    :func:`~tournament_eval.presentation.console.leaderboard`: one float per
+    contestant, higher is better.  Read it the same way as Copeland (range
+    ``[0, n-1]`` for ``n`` contestants; the winner scores ``n - 1`` when the
+    beatpath order is strict).  When two contestants beatpath-tie (their
+    beatpath widths are equal both ways) they score the same \u2014 a *Schulze
+    tie*, rarer than a Copeland tie but possible on symmetric profiles (e.g.
+    an even head-to-head split between two contestants, or a perfectly symmetric
+    multi-way cycle).  It is not a ballot tie (ballots stay strict); it is an
+    aggregate tie the method doesn\u2019t manufacture on ordinary data.
+
+    Parameters
+    ----------
+    ballots : Iterable[Ballot]
+        The ranked verdicts, each contestant labels best-first (e.g. from
+        :func:`~tournament_eval.aggregation.ballots.ballots_from_rankings`).
+    expected_contestants : Iterable[str] | None
+        The full universe of contestants, forwarded to :func:`matrix`.  When
+        given, every such contestant is scored even if some ballots omit it
+        (an omitted contestant is not-compared, so it has no beatpaths and
+        beats no one \u2014 it scores ``0``).
+    strict : bool
+        Forwarded to :func:`matrix`: with ``expected_contestants`` set, raise on
+        a ballot that omits an expected contestant.
+
+    Returns
+    -------
+    dict[str, float]
+        Number of opponents each contestant beatpath-beats, range ``[0, n-1]``
+        for ``n`` contestants.  Higher is better; ``n - 1`` is the Schulze winner
+        when the beatpath order is strict.  Sort it yourself for a leaderboard,
+        the same way as :func:`copeland`.
+
+    Raises
+    ------
+    ValueError
+        If any single ballot lists a contestant more than once, or for the
+        ``expected_contestants`` / ``strict`` cases documented on :func:`matrix`.
+
+    Notes
+    -----
+    Requires ``numpy`` (the ``analysis`` extra) at call time, via :func:`matrix`;
+    importing this module does not.  A missing extra raises :class:`ImportError`
+    with the install command.
+    """
+    tally = matrix(ballots, expected_contestants=expected_contestants, strict=strict)
+    require("numpy", extra="analysis")
+    import numpy as np
+
+    above = tally.above
+    n = len(tally.contestants)
+
+    # Strongest-beatpath widths via the Floyd-Warshall-style update:
+    #   strengths[i, j] = max(strengths[i, j],
+    #                         min(strengths[i, k], strengths[k, j]))
+    # over every intermediate k.  The pairwise head-to-head counts `above`
+    # seed the widths (a direct win d[i,j] is a one-link beatpath of that
+    # width); the diagonal is fixed at 0 (a contestant doesn't beat itself).
+    strengths = above.astype(int).copy()
+    np.fill_diagonal(strengths, 0)
+    for k in range(n):
+        via_k = np.minimum(strengths[:, k, None], strengths[k, None, :])
+        strengths = np.maximum(strengths, via_k)
+        np.fill_diagonal(strengths, 0)
+
+    beats = strengths > strengths.T
+    scores = beats.sum(axis=1)
+    return {label: float(scores[i]) for i, label in enumerate(tally.contestants)}

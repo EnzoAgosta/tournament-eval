@@ -329,7 +329,7 @@ Collapsing per-ranker rankings into a verdict is a real methodological choice, s
 The package is organised by aggregation style, and you reach for the style you want:
 
 - `tournament_eval.aggregation.positional` — Borda and its normalized variant. Pure Python, **no `numpy` needed**. Scores depend on *where* each ballot ranks a contestant.
-- `tournament_eval.aggregation.pairwise` — the head-to-head tally (`matrix`) and the methods built on it (Copeland, with more to come). Need `numpy` (the `analysis` extra) **at call time only** — importing the module doesn't pull it in, so a plain tournament run stays dependency-free until you actually call a pairwise method.
+- `tournament_eval.aggregation.pairwise` — the head-to-head tally (`matrix`) and the methods built on it (Copeland, Schulze, with more to come). Need `numpy` (the `analysis` extra) **at call time only** — importing the module doesn't pull it in, so a plain tournament run stays dependency-free until you actually call a pairwise method.
 - `tournament_eval.aggregation.bias` — ranker preference patterns the aggregate scores hide: a ranker × contestant mean-placement grid and the per-ranker self-preference number. Pure Python (no `numpy`), and the one module that reads the ballot's `author` — ranker identity *is* the signal there.
 
 `ballots_from_rankings` bridges a run to either style, de-anonymizing each ranking's ids back to author labels:
@@ -350,9 +350,10 @@ from tournament_eval.aggregation import pairwise
 
 pairwise.matrix(ballots)               # the head-to-head count matrix; the shared primitive
 pairwise.copeland(ballots, expected_contestants={"gpt-4o", "claude-sonnet-4-6"})  # wins − losses; a Condorcet winner tops it
+pairwise.schulze(ballots)              # strongest-beatpath widths; Condorcet-consistent, monotone, cloneproof — breaks Copeland ties
 ```
 
-`pairwise.matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). Calling a pairwise method without the `analysis` extra raises a clear `ImportError` naming the package and the install command — importing the module never fails. More methods (Schulze, Bradley–Terry, …) will land in `pairwise` over time — conservatively, only ones whose results we're confident are accurate.
+`pairwise.matrix` is the shared primitive the non-positional methods build on; `expected_contestants` declares the full field so a contestant some ballots omit is still scored (treated as not-compared, not penalized). Calling a pairwise method without the `analysis` extra raises a clear `ImportError` naming the package and the install command — importing the module never fails. More methods (Bradley–Terry, …) will land in `pairwise` over time — conservatively, only ones whose results we're confident are accurate.
 
 ### Bias as signal
 

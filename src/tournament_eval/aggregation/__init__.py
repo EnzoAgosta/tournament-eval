@@ -19,7 +19,7 @@ and is rejected.
   contestant.
 * :mod:`tournament_eval.aggregation.pairwise` — the head-to-head tally
   (:func:`~tournament_eval.aggregation.pairwise.matrix`) and the methods built on it
-  (Copeland, with more to come).  Need ``numpy`` (the ``analysis`` extra) **at call
+  (Copeland, Schulze, with more to come).  Need ``numpy`` (the ``analysis`` extra) **at call
   time only** — importing the module does not pull it in, so this package and a plain
   tournament run stay dependency-free until you actually call a pairwise method.
 * :mod:`tournament_eval.aggregation.bias` — ranker preference patterns the aggregate
