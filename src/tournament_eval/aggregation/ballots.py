@@ -17,7 +17,6 @@ import dataclasses
 from collections.abc import Iterable, Iterator
 
 from tournament_eval.models import GenerationResult, RankingResult
-from tournament_eval.orchestration import _ranking_authors
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -109,6 +108,9 @@ def ballots_from_rankings(
     """
     author_by_id = {generation.id: generation.author for generation in generation_results}
     return [
-        Ballot(ranking=_ranking_authors(ranking_result, author_by_id), author=ranking_result.author)
+        Ballot(
+            ranking=[author_by_id[generation_id] for generation_id in ranking_result.ranking],
+            author=ranking_result.author,
+        )
         for ranking_result in ranking_results
     ]

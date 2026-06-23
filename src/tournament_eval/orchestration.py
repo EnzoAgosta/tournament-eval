@@ -230,6 +230,12 @@ def _extract_ranking_failure_details(
                     normalised.append(err)
                 details["validation_errors"] = normalised
             except Exception:
+                # `errors()` is an arbitrary third-party callable (pydantic's
+                # ValidationError.errors, a provider's, ...).  Best-effort per the
+                # contract: if it raises or yields something unshapely, leave
+                # `validation_errors` out rather than failing the whole details
+                # extraction.  A probe that throws is treated the same as one that
+                # finds nothing.
                 pass
 
     body = getattr(exc, "body", None)
@@ -864,15 +870,4 @@ def deanonymize_ranking(
         ``["gpt-4o", "claude-sonnet-4-6", ...]``.
     """
     author_by_id = {generation.id: generation.author for generation in generations}
-    return _ranking_authors(ranking_result, author_by_id)
-
-
-def _ranking_authors(ranking_result: RankingResult, author_by_id: dict[uuid.UUID, str]) -> list[str]:
-    """Map one ranking's de-anonymized ids to author labels against a prebuilt lookup.
-
-    The shared core of :func:`deanonymize_ranking` (which builds the lookup for a single
-    call) and :func:`~tournament_eval.aggregation.ballots.ballots_from_rankings` (which
-    builds it once and reuses it across every ranking, rather than rebuilding an O(N)
-    map per ranking).  Raises :class:`KeyError` if a ranked id isn't in ``author_by_id``.
-    """
     return [author_by_id[generation_id] for generation_id in ranking_result.ranking]

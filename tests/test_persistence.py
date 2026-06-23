@@ -91,17 +91,6 @@ def test_read_generation_failure_file_returns_list_of_generation_failures(
     assert read_generation_failure_file(path) == [failure1, failure2]
 
 
-def test_read_generation_failure_file_returns_list_of_ranking_task(
-    tmp_path: Path, make_ranking_task: RankingTaskFactory
-) -> None:
-    path = tmp_path / "generation_failures.jsonl"
-    task1 = make_ranking_task()
-    task2 = make_ranking_task()
-    append_record(path, task1)
-    append_record(path, task2)
-    assert read_ranking_task_file(path) == [task1, task2]
-
-
 def test_read_ranking_task_file_returns_list_of_ranking_tasks(
     tmp_path: Path, make_ranking_task: RankingTaskFactory
 ) -> None:
